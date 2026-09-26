@@ -1,0 +1,13 @@
+name = "cals-app-food-recognition"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+
+# The Anthropic API key is a secret, never a plain var — set it with:
+#   wrangler secret put ANTHROPIC_API_KEY
+# It never gets committed to source control or bundled into the deployed
+# Worker code as a literal value.
+
+[vars]
+# Model used for photo analysis. Override with `wrangler deploy --var ANTHROPIC_MODEL:<id>`
+# or by editing this value — kept out of secrets since it's not sensitive.
+ANTHROPIC_MODEL = "claude-sonnet-5"

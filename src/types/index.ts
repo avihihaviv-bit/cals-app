@@ -204,13 +204,43 @@ export interface ProgressPhoto {
   loggedAt: string; // ISO timestamp
 }
 
+/** A plausible alternative identification, offered when the model isn't confident — e.g. "Turkey breast" as an alternative to "Chicken breast". Never presented as more certain than the primary guess. */
+export interface FoodAlternative {
+  label: string;
+  /** Local database id to swap to, when this alternative matches a known food. Absent means "something else" — routes to manual search. */
+  foodId?: string;
+}
+
 export interface ScannedFoodCandidate {
   id: string;
   foodId: string;
   name: string;
+  imageEmoji?: string;
+  /** Purely factual: what was actually visible in the photo (shape, color, texture) — never includes assumed quantity or nutrition. */
+  seenDescription: string;
+  /** Things actually visible in the photo (sauce, oil sheen, cheese, etc.) — distinct from addedDetails, which the user adds manually because they AREN'T visible. */
+  visibleExtras?: string[];
+  /** Set when this food is naturally counted rather than weighed (e.g. "2 eggs", "3 slices"). */
+  unitCount?: number;
+  unitLabel?: string;
   estimatedGrams: number;
+  /** The min/max range behind estimatedGrams (its midpoint), when the source was a real estimate rather than a fixed serving. */
+  estimatedGramsRange?: [number, number];
+  /** The per-100g baseline actually used for this candidate's math (from the local database when matched, otherwise the vision model's own estimate) — kept so quantity edits can always be recomputed without re-matching. */
+  per100gUsed: NutritionFacts;
   nutrition: NutritionFacts; // for the estimated grams, including any addedDetails below
+  /** 0-100 identification confidence. Below IDENTIFICATION_CONFIDENCE_THRESHOLD, the UI must show alternatives instead of asserting the name as fact. */
+  identificationConfidence: number;
+  /** Legacy coarse band, derived from identificationConfidence — kept for existing UI/copy that expects it. */
   confidence: 'low' | 'medium' | 'high';
+  /** Other plausible identifications — only meaningful when identificationConfidence is below threshold. */
+  alternatives?: FoodAlternative[];
+  /** True when the nutrition came from our own verified/estimated database; false means it's the vision model's own per-100g guess (dataQuality 'ai_estimate', source 'AI Vision Estimate'). */
+  matchedLocalFood: boolean;
+  /** Where per100gUsed came from — a real database source when matchedLocalFood, otherwise "AI Vision Estimate". Shown to keep the user honestly informed of data provenance. */
+  nutritionSource: string;
+  /** Approximate location of this item in the photo, as 0-100 percentages from the top-left, when the model provided one. Used to draw labeled markers over the image. */
+  boundingBox?: { xPct: number; yPct: number; wPct: number; hPct: number };
   /** Hidden ingredients (oil, sauce, etc.) the user manually added because the AI can't see them in the photo. */
   addedDetails?: HiddenIngredientEntry[];
 }
@@ -228,6 +258,10 @@ export interface ScanResult {
   imageDataUrl?: string;
   candidates: ScannedFoodCandidate[];
   createdAt: string;
+  /** False when real recognition genuinely could not run (no backend configured, call failed, or the model reported the photo isn't usable) — the UI must never show fabricated candidates in this case, only a clear message plus a manual-search path. */
+  recognitionAvailable: boolean;
+  /** Present when recognitionAvailable is false, to explain why (e.g. "photo too blurry to identify anything"). */
+  unavailableReason?: string;
 }
 
 export interface FoodSearchQuery {
