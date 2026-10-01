@@ -27,8 +27,14 @@ interface RawAnalysisItem {
   estimatedGramsMin: number;
   estimatedGramsMax: number;
   visibleExtras?: string[];
-  per100gEstimate: { calories: number; proteinG: number; carbsG: number; fatG: number };
-  boundingBox?: { xPct: number; yPct: number; wPct: number; hPct: number };
+  per100gCalories: number;
+  per100gProteinG: number;
+  per100gCarbsG: number;
+  per100gFatG: number;
+  boxXPct?: number;
+  boxYPct?: number;
+  boxWPct?: number;
+  boxHPct?: number;
 }
 
 interface RawAnalysisResponse {
@@ -70,10 +76,10 @@ function buildCandidate(item: RawAnalysisItem, index: number): ScannedFoodCandid
   const per100g: NutritionFacts = localFood
     ? localFood.per100g
     : {
-        calories: item.per100gEstimate?.calories ?? 0,
-        proteinG: item.per100gEstimate?.proteinG ?? 0,
-        carbsG: item.per100gEstimate?.carbsG ?? 0,
-        fatG: item.per100gEstimate?.fatG ?? 0,
+        calories: item.per100gCalories ?? 0,
+        proteinG: item.per100gProteinG ?? 0,
+        carbsG: item.per100gCarbsG ?? 0,
+        fatG: item.per100gFatG ?? 0,
       };
 
   const min = item.estimatedGramsMin ?? item.estimatedGramsMax ?? 100;
@@ -104,7 +110,10 @@ function buildCandidate(item: RawAnalysisItem, index: number): ScannedFoodCandid
         : undefined,
     matchedLocalFood: !!localFood,
     nutritionSource: localFood?.source ?? 'AI Vision Estimate',
-    boundingBox: item.boundingBox,
+    boundingBox:
+      item.boxXPct !== undefined && item.boxYPct !== undefined && item.boxWPct !== undefined && item.boxHPct !== undefined
+        ? { xPct: item.boxXPct, yPct: item.boxYPct, wPct: item.boxWPct, hPct: item.boxHPct }
+        : undefined,
   };
 }
 
@@ -139,6 +148,8 @@ class RealFoodRecognitionService implements FoodRecognitionServiceInterface {
         body: JSON.stringify({ image: imageDataUrl }),
       });
       if (!res.ok) {
+        const errBody = await res.text().catch(() => '');
+        console.error('Recognition backend returned', res.status, errBody);
         return unavailable(imageDataUrl, 'The recognition service is temporarily unavailable.');
       }
       data = await res.json();

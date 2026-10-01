@@ -27,7 +27,10 @@ const CORS_HEADERS = {
   'Access-Control-Allow-Headers': 'Content-Type',
 };
 
-// Gemini's structured-output schema format (OpenAPI 3.0 subset, uppercase types).
+// Gemini's structured-output schema format (OpenAPI 3.0 subset, uppercase
+// types). Kept deliberately flat (no nested objects) — Gemini's controlled
+// generation is less reliable with deep nesting than it is with flat
+// per-item fields.
 const RESPONSE_SCHEMA = {
   type: 'OBJECT',
   properties: {
@@ -76,42 +79,31 @@ const RESPONSE_SCHEMA = {
           unitLabel: { type: 'STRING', description: 'Unit name, e.g. "eggs", "slices", "pieces". Only when isCountable is true.' },
           estimatedGramsMin: { type: 'NUMBER', description: 'Low end of your honest weight/volume estimate in grams (or ml).' },
           estimatedGramsMax: { type: 'NUMBER', description: 'High end of your honest weight/volume estimate in grams (or ml).' },
-          estimationReasoning: {
-            type: 'STRING',
-            description: 'Which visual reference you used to judge scale — plate/bowl diameter, cutlery length, hand, packaging, cup size, etc.',
-          },
-          preparationMethod: { type: 'STRING', description: 'How it looks prepared (grilled, fried, raw, steamed…) if visible — omit if not determinable.' },
           visibleExtras: {
             type: 'ARRAY',
             items: { type: 'STRING' },
             description: 'Sauces, oil sheen, cheese, dressing, etc. you can actually SEE on this item — not things you assume are there.',
           },
-          isPackagedProduct: { type: 'BOOLEAN', description: 'True if this is a packaged/branded product with visible label text.' },
-          packageLabelText: { type: 'STRING', description: 'Any brand/product name text you can read on packaging, if isPackagedProduct.' },
-          per100gEstimate: {
-            type: 'OBJECT',
-            description:
-              'Your best-knowledge nutrition estimate per 100g/100ml of this specific food, from general knowledge — used ONLY as a fallback if the client cannot match this food in its own verified database. Always treated as an AI estimate, never as verified data.',
-            properties: {
-              calories: { type: 'NUMBER' },
-              proteinG: { type: 'NUMBER' },
-              carbsG: { type: 'NUMBER' },
-              fatG: { type: 'NUMBER' },
-            },
-            required: ['calories', 'proteinG', 'carbsG', 'fatG'],
-          },
-          boundingBox: {
-            type: 'OBJECT',
-            description: 'Approximate location of this item in the image, as percentages (0-100) of image width/height, from the top-left corner.',
-            properties: {
-              xPct: { type: 'NUMBER' },
-              yPct: { type: 'NUMBER' },
-              wPct: { type: 'NUMBER' },
-              hPct: { type: 'NUMBER' },
-            },
-          },
+          per100gCalories: { type: 'NUMBER', description: 'Fallback per-100g calorie estimate, used only if this food is not in our own database.' },
+          per100gProteinG: { type: 'NUMBER', description: 'Fallback per-100g protein grams.' },
+          per100gCarbsG: { type: 'NUMBER', description: 'Fallback per-100g carb grams.' },
+          per100gFatG: { type: 'NUMBER', description: 'Fallback per-100g fat grams.' },
+          boxXPct: { type: 'NUMBER', description: 'Left edge of this item in the photo, as a 0-100 percentage of image width.' },
+          boxYPct: { type: 'NUMBER', description: 'Top edge of this item in the photo, as a 0-100 percentage of image height.' },
+          boxWPct: { type: 'NUMBER', description: 'Width of this item in the photo, as a 0-100 percentage of image width.' },
+          boxHPct: { type: 'NUMBER', description: 'Height of this item in the photo, as a 0-100 percentage of image height.' },
         },
-        required: ['seenDescription', 'bestGuessName', 'identificationConfidence', 'estimatedGramsMin', 'estimatedGramsMax', 'per100gEstimate'],
+        required: [
+          'seenDescription',
+          'bestGuessName',
+          'identificationConfidence',
+          'estimatedGramsMin',
+          'estimatedGramsMax',
+          'per100gCalories',
+          'per100gProteinG',
+          'per100gCarbsG',
+          'per100gFatG',
+        ],
       },
     },
   },
@@ -128,7 +120,7 @@ const SYSTEM_PROMPT = `You are a food-photo analysis system feeding a nutrition 
 7. What portion size does it look like, using reference objects in the frame (plate/bowl diameter, utensils, hands, packaging, common cup/glass sizes) to judge scale?
 8. Are there visible sauces, oils, dressings, cheese, or toppings you can actually see (not ones you're assuming)?
 9. Is this a packaged/branded product identifiable from its label?
-10. Only after all of the above, produce per-100g nutrition estimates for the fallback field.
+10. Only after all of the above, produce per-100g nutrition estimates for the fallback fields.
 
 Hard rules:
 - Never state an assumption as if it were observed. seenDescription must contain only what is visually verifiable.
@@ -136,6 +128,7 @@ Hard rules:
 - Give an honest estimated-grams range; do not narrow it just to look precise. A wide range is more honest than a falsely narrow one.
 - If your confidence in an identification is below 70, list real alternatives — do not silently pick one and hide the uncertainty.
 - Only set "unusable" if the photo truly cannot support even a rough estimate — a blurry or partial photo is still usually estimable with a wider range, so use this field sparingly.
+- boxXPct/boxYPct/boxWPct/boxHPct are optional — omit them entirely if you cannot judge the region confidently, rather than guessing.
 Respond with ONLY the JSON object matching the given schema — no other text.`;
 
 export default {
@@ -150,22 +143,27 @@ export default {
     let body: { image?: string };
     try {
       body = await request.json();
-    } catch {
+    } catch (err) {
+      console.error('Invalid JSON body from client:', String(err));
       return json({ error: 'Invalid JSON body' }, 400);
     }
 
     const imageDataUrl = body.image;
     if (!imageDataUrl || !imageDataUrl.startsWith('data:image/')) {
+      console.error('Missing or invalid image data URL. Prefix seen:', imageDataUrl?.slice(0, 30));
       return json({ error: 'Missing or invalid "image" data URL' }, 400);
     }
 
     const match = imageDataUrl.match(/^data:(image\/[a-zA-Z+]+);base64,(.+)$/);
     if (!match) {
+      console.error('Could not parse image data URL, length was:', imageDataUrl.length);
       return json({ error: 'Could not parse image data URL' }, 400);
     }
     const [, mediaType, base64Data] = match;
+    console.log('Received image:', mediaType, 'base64 length:', base64Data.length);
 
     if (!env.GEMINI_API_KEY) {
+      console.error('GEMINI_API_KEY secret is not set on this Worker.');
       return json({ error: 'Server not configured: missing GEMINI_API_KEY secret' }, 500);
     }
 
@@ -195,24 +193,29 @@ export default {
 
       if (!geminiRes.ok) {
         const errText = await geminiRes.text();
+        console.error('Gemini API returned an error. Status:', geminiRes.status, 'Body:', errText);
         return json({ error: `Vision API error: ${geminiRes.status}`, detail: errText }, 502);
       }
 
-      const data = await geminiRes.json();
+      const data: any = await geminiRes.json();
       const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
       if (!text) {
-        return json({ error: 'Model did not return structured analysis' }, 502);
+        console.error('Gemini response had no text part. Full response:', JSON.stringify(data));
+        return json({ error: 'Model did not return structured analysis', detail: JSON.stringify(data) }, 502);
       }
 
       let parsed: unknown;
       try {
         parsed = JSON.parse(text);
-      } catch {
-        return json({ error: 'Model returned malformed JSON' }, 502);
+      } catch (err) {
+        console.error('Could not JSON.parse model text:', text, 'Error:', String(err));
+        return json({ error: 'Model returned malformed JSON', detail: text }, 502);
       }
 
+      console.log('Recognition succeeded.');
       return json(parsed, 200);
     } catch (err) {
+      console.error('Fetch to Gemini threw an exception:', String(err));
       return json({ error: 'Recognition request failed', detail: String(err) }, 502);
     }
   },
