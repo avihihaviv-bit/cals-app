@@ -159,7 +159,10 @@ export default {
     // trailing newline or space, which silently breaks the API call.
     const apiKey = env.GEMINI_API_KEY.trim();
 
-    const model = env.GEMINI_MODEL || 'gemini-2.5-flash';
+    // 'gemini-flash-latest' is Google's stable alias for whichever Flash
+    // model is currently available — using a specific pinned version (e.g.
+    // 'gemini-2.5-flash') breaks outright once Google retires that version.
+    const model = env.GEMINI_MODEL || 'gemini-flash-latest';
     console.log('Calling Gemini model:', model, 'key length:', apiKey.length);
 
     try {
