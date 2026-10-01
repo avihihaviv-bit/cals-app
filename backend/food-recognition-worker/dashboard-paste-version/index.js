@@ -165,32 +165,48 @@ export default {
     const model = env.GEMINI_MODEL || 'gemini-flash-latest';
     console.log('Calling Gemini model:', model, 'key length:', apiKey.length);
 
-    try {
-      const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
-          contents: [
-            {
-              role: 'user',
-              parts: [
-                { inline_data: { mime_type: mediaType, data: base64Data } },
-                { text: 'Analyze this food photo following your protocol.' },
-              ],
-            },
+    const geminiBody = JSON.stringify({
+      system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            { inline_data: { mime_type: mediaType, data: base64Data } },
+            { text: 'Analyze this food photo following your protocol.' },
           ],
-          generationConfig: {
-            responseMimeType: 'application/json',
-            responseSchema: RESPONSE_SCHEMA,
-          },
-        }),
-      });
+        },
+      ],
+      generationConfig: {
+        responseMimeType: 'application/json',
+        responseSchema: RESPONSE_SCHEMA,
+      },
+    });
+    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
-      if (!geminiRes.ok) {
-        const errText = await geminiRes.text();
-        console.error('Gemini API returned an error. Status:', geminiRes.status, 'Body:', errText);
-        return json({ error: `Vision API error: ${geminiRes.status}`, detail: errText }, 502);
+    try {
+      // Gemini's free tier occasionally returns 503 ("currently experiencing
+      // high demand") or 429 (rate limited) — both are transient, so retry a
+      // few times with a short backoff before giving up.
+      const MAX_ATTEMPTS = 3;
+      let geminiRes;
+      let errText = '';
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        geminiRes = await fetch(geminiUrl, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: geminiBody,
+        });
+        if (geminiRes.ok) break;
+
+        errText = await geminiRes.text();
+        const retryable = geminiRes.status === 503 || geminiRes.status === 429;
+        console.error(`Gemini API error (attempt ${attempt}/${MAX_ATTEMPTS}). Status:`, geminiRes.status, 'Body:', errText);
+        if (!retryable || attempt === MAX_ATTEMPTS) break;
+        await new Promise((resolve) => setTimeout(resolve, attempt * 800));
+      }
+
+      if (!geminiRes || !geminiRes.ok) {
+        return json({ error: `Vision API error: ${geminiRes?.status}`, detail: errText }, 502);
       }
 
       const data = await geminiRes.json();
