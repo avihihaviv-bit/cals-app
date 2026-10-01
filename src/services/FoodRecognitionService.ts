@@ -10,11 +10,11 @@ export interface FoodRecognitionServiceInterface {
 /** Below this identification confidence, the UI must show alternatives instead of asserting the name as fact. */
 export const IDENTIFICATION_CONFIDENCE_THRESHOLD = 70;
 
-// The backend Worker URL (see backend/food-recognition-worker/) — unset until
-// the user deploys it and configures this build-time env var. Never an API
-// key: this only ever points at our own small proxy, which is what actually
-// holds the secret.
-const API_URL = import.meta.env.VITE_FOOD_RECOGNITION_API_URL as string | undefined;
+// The backend Worker URL (see backend/food-recognition-worker/) that holds
+// the real Gemini API key server-side — never an API key itself, just the
+// address of our own small proxy. VITE_FOOD_RECOGNITION_API_URL overrides
+// this default, for anyone deploying their own Worker instead.
+const API_URL = (import.meta.env.VITE_FOOD_RECOGNITION_API_URL as string | undefined) || 'https://callapp.avihihaviv.workers.dev';
 
 interface RawAnalysisItem {
   seenDescription: string;
