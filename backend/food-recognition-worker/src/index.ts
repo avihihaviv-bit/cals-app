@@ -173,8 +173,12 @@ export default {
     // 'gemini-flash-latest' is Google's stable alias for whichever Flash
     // model is currently available — using a specific pinned version (e.g.
     // 'gemini-2.5-flash') breaks outright once Google retires that version.
-    const model = env.GEMINI_MODEL || 'gemini-flash-latest';
-    console.log('Calling Gemini model:', model, 'key length:', apiKey.length);
+    // Candidate list: if the primary model's pool is overloaded (503), try a
+    // couple of alternate pools before giving up — different model ids often
+    // have independent capacity, so one being busy doesn't mean they all are.
+    const candidateModels = env.GEMINI_MODEL
+      ? [env.GEMINI_MODEL]
+      : ['gemini-flash-latest', 'gemini-2.0-flash', 'gemini-2.5-flash'];
 
     const geminiBody = JSON.stringify({
       system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
@@ -192,31 +196,38 @@ export default {
         responseSchema: RESPONSE_SCHEMA,
       },
     });
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
     try {
       // Gemini's free tier occasionally returns 503 ("currently experiencing
-      // high demand") or 429 (rate limited) — both are transient, so retry a
-      // few times with a short backoff before giving up.
-      const MAX_ATTEMPTS = 3;
+      // high demand") or 429 (rate limited) — both are transient. Retry each
+      // candidate model a couple of times with backoff, then move to the
+      // next model, before finally giving up.
+      const ATTEMPTS_PER_MODEL = 2;
       let geminiRes: Response | undefined;
       let errText = '';
-      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-        geminiRes = await fetch(geminiUrl, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: geminiBody,
-        });
-        if (geminiRes.ok) break;
+      let lastModelTried = candidateModels[0];
+      outer: for (const candidateModel of candidateModels) {
+        lastModelTried = candidateModel;
+        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${candidateModel}:generateContent?key=${apiKey}`;
+        for (let attempt = 1; attempt <= ATTEMPTS_PER_MODEL; attempt++) {
+          console.log(`Calling Gemini model "${candidateModel}", attempt ${attempt}/${ATTEMPTS_PER_MODEL}, key length:`, apiKey.length);
+          geminiRes = await fetch(geminiUrl, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: geminiBody,
+          });
+          if (geminiRes.ok) break outer;
 
-        errText = await geminiRes.text();
-        const retryable = geminiRes.status === 503 || geminiRes.status === 429;
-        console.error(`Gemini API error (attempt ${attempt}/${MAX_ATTEMPTS}). Status:`, geminiRes.status, 'Body:', errText);
-        if (!retryable || attempt === MAX_ATTEMPTS) break;
-        await new Promise((resolve) => setTimeout(resolve, attempt * 800));
+          errText = await geminiRes.text();
+          const retryable = geminiRes.status === 503 || geminiRes.status === 429;
+          console.error(`Gemini API error for model "${candidateModel}" (attempt ${attempt}/${ATTEMPTS_PER_MODEL}). Status:`, geminiRes.status, 'Body:', errText);
+          if (!retryable) break outer; // non-retryable (bad key, bad schema, etc.) — no point trying other models either
+          await new Promise((resolve) => setTimeout(resolve, attempt * 1200));
+        }
       }
 
       if (!geminiRes || !geminiRes.ok) {
+        console.error('All Gemini attempts exhausted. Last model tried:', lastModelTried);
         return json({ error: `Vision API error: ${geminiRes?.status}`, detail: errText }, 502);
       }
 
