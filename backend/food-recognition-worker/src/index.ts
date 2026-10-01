@@ -166,11 +166,15 @@ export default {
       console.error('GEMINI_API_KEY secret is not set on this Worker.');
       return json({ error: 'Server not configured: missing GEMINI_API_KEY secret' }, 500);
     }
+    // Defensive: a key pasted via a phone's clipboard/Notes app can pick up a
+    // trailing newline or space, which silently breaks the API call.
+    const apiKey = env.GEMINI_API_KEY.trim();
 
     const model = env.GEMINI_MODEL || 'gemini-2.5-flash';
+    console.log('Calling Gemini model:', model, 'key length:', apiKey.length);
 
     try {
-      const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`, {
+      const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
