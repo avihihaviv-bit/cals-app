@@ -199,10 +199,12 @@ export default {
 
     try {
       // Gemini's free tier occasionally returns 503 ("currently experiencing
-      // high demand") or 429 (rate limited) — both are transient. Retry each
-      // candidate model a couple of times with backoff, then move to the
-      // next model, before finally giving up.
-      const ATTEMPTS_PER_MODEL = 2;
+      // high demand") or 429 (rate limited) — both are transient. Rather than
+      // retrying the SAME overloaded model repeatedly (which burns through
+      // the free daily quota fast for little benefit), try each candidate
+      // model once — a different model is a different capacity pool, so it's
+      // more likely to succeed than hammering the same one twice.
+      const ATTEMPTS_PER_MODEL = 1;
       let geminiRes: Response | undefined;
       let errText = '';
       let lastModelTried = candidateModels[0];
@@ -222,7 +224,9 @@ export default {
           const retryable = geminiRes.status === 503 || geminiRes.status === 429;
           console.error(`Gemini API error for model "${candidateModel}" (attempt ${attempt}/${ATTEMPTS_PER_MODEL}). Status:`, geminiRes.status, 'Body:', errText);
           if (!retryable) break outer; // non-retryable (bad key, bad schema, etc.) — no point trying other models either
-          await new Promise((resolve) => setTimeout(resolve, attempt * 1200));
+          if (attempt < ATTEMPTS_PER_MODEL) {
+            await new Promise((resolve) => setTimeout(resolve, attempt * 1200));
+          }
         }
       }
 
