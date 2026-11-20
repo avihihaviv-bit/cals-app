@@ -1,6 +1,9 @@
 import { FOODS, findFoodById } from '@/data/foods';
 import { calculateNutrition } from '@/utils/nutritionCalculator';
 import { generateId } from '@/utils/id';
+import { getGeminiKey } from '@/utils/geminiKey';
+import { downscaleImage } from '@/utils/resizeImage';
+import { analyzeFoodPhoto, GeminiError, type RawAnalysisItem, type RawAnalysisResponse } from '@/services/geminiVision';
 import type { FoodItem, NutritionFacts, ScanResult, ScannedFoodCandidate } from '@/types';
 
 export interface FoodRecognitionServiceInterface {
@@ -10,40 +13,10 @@ export interface FoodRecognitionServiceInterface {
 /** Below this identification confidence, the UI must show alternatives instead of asserting the name as fact. */
 export const IDENTIFICATION_CONFIDENCE_THRESHOLD = 70;
 
-// The backend Worker URL (see backend/food-recognition-worker/) that holds
-// the real Gemini API key server-side — never an API key itself, just the
-// address of our own small proxy. VITE_FOOD_RECOGNITION_API_URL overrides
-// this default, for anyone deploying their own Worker instead.
-const API_URL = (import.meta.env.VITE_FOOD_RECOGNITION_API_URL as string | undefined) || 'https://callapp.avihihaviv.workers.dev';
-
-interface RawAnalysisItem {
-  seenDescription: string;
-  bestGuessName: string;
-  identificationConfidence: number;
-  alternatives?: string[];
-  isCountable?: boolean;
-  unitCount?: number;
-  unitLabel?: string;
-  estimatedGramsMin: number;
-  estimatedGramsMax: number;
-  visibleExtras?: string[];
-  per100gCalories: number;
-  per100gProteinG: number;
-  per100gCarbsG: number;
-  per100gFatG: number;
-  boxXPct?: number;
-  boxYPct?: number;
-  boxWPct?: number;
-  boxHPct?: number;
-}
-
-interface RawAnalysisResponse {
-  isFood?: boolean;
-  unusable?: boolean;
-  unusableReason?: string;
-  items?: RawAnalysisItem[];
-  error?: string;
-}
+// Fallback path when the user hasn't added their own Gemini key: the
+// Cloudflare Worker in backend/food-recognition-worker/, which holds a key
+// server-side. VITE_FOOD_RECOGNITION_API_URL overrides it.
+const WORKER_URL = (import.meta.env.VITE_FOOD_RECOGNITION_API_URL as string | undefined) || 'https://callapp.avihihaviv.workers.dev';
 
 function normalize(text: string): string {
   return text.trim().toLowerCase();
@@ -117,7 +90,11 @@ function buildCandidate(item: RawAnalysisItem, index: number): ScannedFoodCandid
   };
 }
 
-function unavailable(imageDataUrl: string, reason: string): ScanResult {
+function unavailable(
+  imageDataUrl: string,
+  reason: string,
+  extra: { detail?: string; needsApiKey?: boolean } = {},
+): ScanResult {
   return {
     id: generateId('scan'),
     imageDataUrl,
@@ -125,41 +102,73 @@ function unavailable(imageDataUrl: string, reason: string): ScanResult {
     createdAt: new Date().toISOString(),
     recognitionAvailable: false,
     unavailableReason: reason,
+    unavailableDetail: extra.detail,
+    needsApiKey: extra.needsApiKey,
   };
 }
 
+/** The no-key fallback: our Cloudflare Worker proxy. */
+async function analyzeViaWorker(imageDataUrl: string): Promise<RawAnalysisResponse | ScanResult> {
+  try {
+    const res = await fetch(WORKER_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ image: imageDataUrl }),
+    });
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => '');
+      return unavailable(imageDataUrl, 'Photo scanning needs your own free Gemini key — add it in Settings (takes a minute).', {
+        detail: `Shared service returned ${res.status}${errBody ? `: ${errBody.slice(0, 200)}` : ''}`,
+        needsApiKey: true,
+      });
+    }
+    return (await res.json()) as RawAnalysisResponse;
+  } catch (err) {
+    return unavailable(imageDataUrl, 'Photo scanning needs your own free Gemini key — add it in Settings (takes a minute).', {
+      detail: String(err),
+      needsApiKey: true,
+    });
+  }
+}
+
 /**
- * Calls the real vision-analysis backend (see backend/food-recognition-worker/).
- * Deliberately has NO fabricated fallback: if the backend isn't configured or
- * the call fails, this returns recognitionAvailable: false rather than ever
- * inventing candidates — the UI routes the user to manual search instead.
+ * Real photo recognition. With the user's own Gemini key it calls Gemini
+ * directly from this device; without one it falls back to the shared Worker.
+ * Deliberately has NO fabricated fallback: any failure returns
+ * recognitionAvailable: false with the real reason, never invented foods.
  */
 class RealFoodRecognitionService implements FoodRecognitionServiceInterface {
-  async recognize(imageDataUrl: string): Promise<ScanResult> {
-    if (!API_URL) {
-      return unavailable(imageDataUrl, 'Photo recognition isn’t set up yet — search for your food instead.');
+  async recognize(originalDataUrl: string): Promise<ScanResult> {
+    const imageDataUrl = await downscaleImage(originalDataUrl);
+    const match = imageDataUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+    if (!match) {
+      return unavailable(imageDataUrl, 'Couldn’t read that photo — try taking it again.');
     }
+    const [, mediaType, base64Data] = match;
 
     let data: RawAnalysisResponse;
-    try {
-      const res = await fetch(API_URL, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ image: imageDataUrl }),
-      });
-      if (!res.ok) {
-        const errBody = await res.text().catch(() => '');
-        console.error('Recognition backend returned', res.status, errBody);
-        return unavailable(imageDataUrl, 'The recognition service is temporarily unavailable.');
+    const apiKey = getGeminiKey();
+    if (apiKey) {
+      try {
+        data = await analyzeFoodPhoto(apiKey, mediaType, base64Data);
+      } catch (err) {
+        if (err instanceof GeminiError) {
+          return unavailable(imageDataUrl, err.message, { detail: err.detail, needsApiKey: err.kind === 'invalid_key' });
+        }
+        return unavailable(imageDataUrl, 'Something went wrong analyzing this photo — try again.', { detail: String(err) });
       }
-      data = await res.json();
-    } catch {
-      return unavailable(imageDataUrl, 'Couldn’t reach the recognition service — check your connection and try again.');
+    } else {
+      const viaWorker = await analyzeViaWorker(imageDataUrl);
+      if ('recognitionAvailable' in viaWorker) return viaWorker;
+      data = viaWorker;
+      if (data.error) {
+        return unavailable(imageDataUrl, 'Photo scanning needs your own free Gemini key — add it in Settings (takes a minute).', {
+          detail: data.error,
+          needsApiKey: true,
+        });
+      }
     }
 
-    if (data.error) {
-      return unavailable(imageDataUrl, 'The recognition service is temporarily unavailable.');
-    }
     if (data.isFood === false) {
       return unavailable(imageDataUrl, 'That doesn’t look like food — try a clearer photo of your meal.');
     }

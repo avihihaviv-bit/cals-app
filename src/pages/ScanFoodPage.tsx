@@ -1,6 +1,7 @@
 import { useNavigate } from 'react-router-dom';
 import { useEffect, useRef, useState } from 'react';
-import { Camera, ImagePlus, NotebookPen, RotateCcw, ScanLine, Search, X } from 'lucide-react';
+import { Camera, ImagePlus, KeyRound, NotebookPen, RotateCcw, ScanLine, Search, X } from 'lucide-react';
+import { getGeminiKey } from '@/utils/geminiKey';
 import { foodRecognitionService, IDENTIFICATION_CONFIDENCE_THRESHOLD } from '@/services/FoodRecognitionService';
 import { foodSearchService } from '@/services/FoodSearchService';
 import { useAppStore } from '@/store/useAppStore';
@@ -42,6 +43,7 @@ export function ScanFoodPage() {
   const [mealType, setMealType] = useState<MealType>(mealFromUrl ?? suggestMealType());
   const [detailsOpenFor, setDetailsOpenFor] = useState<string | null>(null);
   const [swapSearchFor, setSwapSearchFor] = useState<string | null>(null);
+  const [hasGeminiKey] = useState(() => !!getGeminiKey());
 
   function handleFile(file: File | undefined) {
     if (!file) return;
@@ -183,6 +185,21 @@ export function ScanFoodPage() {
         <p className="mt-1 text-sm text-muted">Take a photo and let AI estimate the nutrition.</p>
       </header>
 
+      {stage === 'capture' && !hasGeminiKey && (
+        <div className="flex items-start gap-3 rounded-xl2 bg-amber-50 p-4 text-amber-900">
+          <KeyRound size={18} className="mt-0.5 shrink-0" />
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-semibold">Set up AI scanning first</p>
+            <p className="mt-0.5 text-xs text-amber-800">
+              Add your own free Gemini key once in Settings — then photos are analyzed directly by Google&apos;s AI from your phone.
+            </p>
+            <Button size="sm" className="mt-2.5" onClick={() => navigate('/settings')}>
+              Set up now
+            </Button>
+          </div>
+        </div>
+      )}
+
       {stage === 'capture' && (
         <div className="flex flex-col items-center gap-5 rounded-xl2 bg-surface p-8 text-center shadow-card">
           <div className="flex h-20 w-20 items-center justify-center rounded-full bg-primary-50 text-primary-600">
@@ -227,8 +244,19 @@ export function ScanFoodPage() {
           <ErrorState
             title={scan?.unavailableReason ? "Couldn't analyze this photo" : "AI couldn't recognize any food"}
             description={scan?.unavailableReason ?? 'Try a clearer, well-lit photo, or search for the food manually instead.'}
-            onRetry={retake}
+            onRetry={imageDataUrl ? () => runRecognition(imageDataUrl) : retake}
           />
+          {scan?.unavailableDetail && (
+            <p className="break-words px-2 text-center text-[11px] text-faint">Details: {scan.unavailableDetail}</p>
+          )}
+          {scan?.needsApiKey && (
+            <Button fullWidth icon={<KeyRound size={16} />} onClick={() => navigate('/settings')}>
+              {hasGeminiKey ? 'Fix my Gemini key in Settings' : 'Set up AI scanning'}
+            </Button>
+          )}
+          <Button fullWidth variant="secondary" icon={<RotateCcw size={16} />} onClick={retake}>
+            Take a different photo
+          </Button>
           <Button fullWidth variant="secondary" icon={<Search size={16} />} onClick={() => navigate(`/add/search?${queryString}`)}>
             Search for food manually
           </Button>

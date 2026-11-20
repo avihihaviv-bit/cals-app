@@ -262,6 +262,10 @@ export interface ScanResult {
   recognitionAvailable: boolean;
   /** Present when recognitionAvailable is false, to explain why (e.g. "photo too blurry to identify anything"). */
   unavailableReason?: string;
+  /** Raw technical detail behind unavailableReason (HTTP status / provider message), shown small so failures are diagnosable without server logs. */
+  unavailableDetail?: string;
+  /** True when the failure is fixable by adding or replacing the Gemini API key in Settings. */
+  needsApiKey?: boolean;
 }
 
 export interface FoodSearchQuery {

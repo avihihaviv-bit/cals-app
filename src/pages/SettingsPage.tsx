@@ -9,6 +9,7 @@ import { Chip } from '@/components/ui/Chip';
 import { Button } from '@/components/ui/Button';
 import { Toggle } from '@/components/ui/Toggle';
 import { exportBackup } from '@/utils/backup';
+import { GeminiKeyCard } from '@/components/settings/GeminiKeyCard';
 import type { UserProfile } from '@/types';
 
 const THEME_OPTIONS: { value: ThemeMode; label: string; icon: typeof Sun }[] = [
@@ -101,6 +102,13 @@ export function SettingsPage() {
         <h1 className="text-2xl font-bold text-fg">Settings</h1>
         <p className="mt-1 text-sm text-muted">Everything here is stored only on this device — nothing is uploaded.</p>
       </header>
+
+      {/* AI photo scanning */}
+      <div id="ai-scanning">
+        <SettingsSection emoji="📸" title="AI photo scanning">
+          <GeminiKeyCard />
+        </SettingsSection>
+      </div>
 
       {/* Profile */}
       <SettingsSection emoji="👤" title="Profile">
