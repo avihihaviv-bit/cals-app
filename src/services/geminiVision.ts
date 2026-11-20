@@ -245,12 +245,46 @@ function extractJsonText(data: any): string | null {
   return text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
 }
 
+const TEXT_SYSTEM_PROMPT = `You are a nutrition-lookup system feeding a nutrition tracking app. The user typed what they ate, possibly with amounts, in any language (often Hebrew or English).
+
+Rules:
+- Create one item per distinct food. Translate names to English for bestGuessName (e.g. "חזה עוף" -> "Chicken breast (cooked)").
+- If the user states an amount in grams or ml, use EXACTLY that: set estimatedGramsMin and estimatedGramsMax both to it. Never change a stated amount.
+- If the user states a count ("2 eggs", "3 slices of bread"), set isCountable true with unitCount/unitLabel and convert to grams with a standard weight per unit.
+- If NO amount is given, estimate one typical portion and set a sensible min/max range around it (this is an estimate, not a fact).
+- seenDescription must quote what the user wrote for that item (e.g. 'You wrote: "150g chicken breast"') — do not invent preparation details.
+- identificationConfidence is how sure you are that bestGuessName matches what they meant; if below 70 list alternatives.
+- Give per-100g calories/protein/carbs/fat for the food as typically prepared/eaten (cooked weight if they said cooked). Use well-known reference values (USDA-style).
+- Do not include bounding boxes.
+- If the text is not about food at all, set isFood false.
+Respond with ONLY the JSON object matching the schema.`;
+
+/** Analyzes a food photo. */
+export function analyzeFoodPhoto(apiKey: string, mediaType: string, base64Data: string): Promise<RawAnalysisResponse> {
+  return generateAnalysis(
+    apiKey,
+    SYSTEM_PROMPT,
+    [{ inline_data: { mime_type: mediaType, data: base64Data } }, { text: 'Analyze this food photo following your protocol.' }],
+    'Gemini declined to analyze this photo — try a different shot.',
+  );
+}
+
+/** Looks up foods the user typed (e.g. "150g chicken breast and 200g rice") — any food, with the exact amounts they gave. */
+export function analyzeFoodText(apiKey: string, description: string): Promise<RawAnalysisResponse> {
+  return generateAnalysis(apiKey, TEXT_SYSTEM_PROMPT, [{ text: `What I ate: ${description}` }], 'Gemini declined to analyze that text — try rephrasing.');
+}
+
 /**
- * Analyzes a food photo. Tries the best available models in order, moving
- * on when one is overloaded, rate-limited, or unavailable — a different model
- * is a different capacity pool, so one being busy rarely means all are.
+ * Runs a structured Gemini request. Tries the best available models in order,
+ * moving on when one is overloaded, rate-limited, or unavailable — a different
+ * model is a different capacity pool, so one being busy rarely means all are.
  */
-export async function analyzeFoodPhoto(apiKey: string, mediaType: string, base64Data: string): Promise<RawAnalysisResponse> {
+async function generateAnalysis(
+  apiKey: string,
+  systemPrompt: string,
+  userParts: unknown[],
+  blockedMessage: string,
+): Promise<RawAnalysisResponse> {
   let models: string[];
   try {
     models = await listUsableModels(apiKey);
@@ -260,13 +294,8 @@ export async function analyzeFoodPhoto(apiKey: string, mediaType: string, base64
   }
 
   const body = JSON.stringify({
-    system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
-    contents: [
-      {
-        role: 'user',
-        parts: [{ inline_data: { mime_type: mediaType, data: base64Data } }, { text: 'Analyze this food photo following your protocol.' }],
-      },
-    ],
+    system_instruction: { parts: [{ text: systemPrompt }] },
+    contents: [{ role: 'user', parts: userParts }],
     generationConfig: { responseMimeType: 'application/json', responseSchema: RESPONSE_SCHEMA, temperature: 0.2 },
   });
 
@@ -283,7 +312,7 @@ export async function analyzeFoodPhoto(apiKey: string, mediaType: string, base64
     if (res.ok) {
       const data = await res.json();
       if (data?.promptFeedback?.blockReason) {
-        throw new GeminiError('blocked', 'Gemini declined to analyze this photo — try a different shot.', `blockReason: ${data.promptFeedback.blockReason}`);
+        throw new GeminiError('blocked', blockedMessage, `blockReason: ${data.promptFeedback.blockReason}`);
       }
       const text = extractJsonText(data);
       if (!text) {
@@ -313,5 +342,5 @@ export async function analyzeFoodPhoto(apiKey: string, mediaType: string, base64
   if (failures.some((f) => /: 5\d\d /.test(f))) {
     throw new GeminiError('overloaded', "Gemini's servers are busy right now — try again in a minute.", detail);
   }
-  throw new GeminiError('bad_response', "Gemini couldn't analyze this photo right now.", detail);
+  throw new GeminiError('bad_response', "Gemini couldn't analyze that right now.", detail);
 }

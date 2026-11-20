@@ -3,11 +3,12 @@ import { calculateNutrition } from '@/utils/nutritionCalculator';
 import { generateId } from '@/utils/id';
 import { getGeminiKey } from '@/utils/geminiKey';
 import { downscaleImage } from '@/utils/resizeImage';
-import { analyzeFoodPhoto, GeminiError, type RawAnalysisItem, type RawAnalysisResponse } from '@/services/geminiVision';
+import { analyzeFoodPhoto, analyzeFoodText, GeminiError, type RawAnalysisItem, type RawAnalysisResponse } from '@/services/geminiVision';
 import type { FoodItem, NutritionFacts, ScanResult, ScannedFoodCandidate } from '@/types';
 
 export interface FoodRecognitionServiceInterface {
   recognize(imageDataUrl: string): Promise<ScanResult>;
+  recognizeText(description: string): Promise<ScanResult>;
 }
 
 /** Below this identification confidence, the UI must show alternatives instead of asserting the name as fact. */
@@ -183,6 +184,41 @@ class RealFoodRecognitionService implements FoodRecognitionServiceInterface {
       candidates,
       createdAt: new Date().toISOString(),
       recognitionAvailable: true,
+    };
+  }
+
+  /** Looks up typed foods ("150g chicken breast, 200g rice") with the user's own gram amounts. Needs the user's Gemini key. */
+  async recognizeText(description: string): Promise<ScanResult> {
+    const text = description.trim();
+    const apiKey = getGeminiKey();
+    const base = { inputKind: 'text' as const };
+    if (!text) return { ...unavailable('', 'Type what you ate first.'), ...base };
+    if (!apiKey) {
+      return {
+        ...unavailable('', 'Typing foods needs your free Gemini key — add it in Settings (takes a minute).', { needsApiKey: true }),
+        ...base,
+      };
+    }
+
+    let data: RawAnalysisResponse;
+    try {
+      data = await analyzeFoodText(apiKey, text);
+    } catch (err) {
+      if (err instanceof GeminiError) {
+        return { ...unavailable('', err.message, { detail: err.detail, needsApiKey: err.kind === 'invalid_key' }), ...base };
+      }
+      return { ...unavailable('', 'Something went wrong — try again.', { detail: String(err) }), ...base };
+    }
+
+    if (data.isFood === false || !data.items || data.items.length === 0) {
+      return { ...unavailable('', 'I couldn’t find a food in that — try something like “150g chicken breast, 200g rice”.'), ...base };
+    }
+    return {
+      id: generateId('scan'),
+      candidates: data.items.map((item, i) => buildCandidate(item, i)),
+      createdAt: new Date().toISOString(),
+      recognitionAvailable: true,
+      inputKind: 'text',
     };
   }
 }

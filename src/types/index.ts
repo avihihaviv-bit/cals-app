@@ -260,6 +260,8 @@ export interface ScanResult {
   createdAt: string;
   /** False when real recognition genuinely could not run (no backend configured, call failed, or the model reported the photo isn't usable) — the UI must never show fabricated candidates in this case, only a clear message plus a manual-search path. */
   recognitionAvailable: boolean;
+  /** Whether this result came from analyzing a photo or from text the user typed. Defaults to 'photo'. */
+  inputKind?: 'photo' | 'text';
   /** Present when recognitionAvailable is false, to explain why (e.g. "photo too blurry to identify anything"). */
   unavailableReason?: string;
   /** Raw technical detail behind unavailableReason (HTTP status / provider message), shown small so failures are diagnosable without server logs. */

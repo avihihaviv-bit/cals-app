@@ -1,6 +1,6 @@
 import { useNavigate } from 'react-router-dom';
 import { useEffect, useRef, useState } from 'react';
-import { Camera, ImagePlus, KeyRound, NotebookPen, RotateCcw, ScanLine, Search, X } from 'lucide-react';
+import { Camera, ImagePlus, KeyRound, Loader2, NotebookPen, PencilLine, RotateCcw, ScanLine, Search, X } from 'lucide-react';
 import { getGeminiKey } from '@/utils/geminiKey';
 import { foodRecognitionService, IDENTIFICATION_CONFIDENCE_THRESHOLD } from '@/services/FoodRecognitionService';
 import { foodSearchService } from '@/services/FoodSearchService';
@@ -44,6 +44,8 @@ export function ScanFoodPage() {
   const [detailsOpenFor, setDetailsOpenFor] = useState<string | null>(null);
   const [swapSearchFor, setSwapSearchFor] = useState<string | null>(null);
   const [hasGeminiKey] = useState(() => !!getGeminiKey());
+  const [typedText, setTypedText] = useState('');
+  const isText = scan?.inputKind === 'text' || (stage === 'analyzing' && !imageDataUrl);
 
   function handleFile(file: File | undefined) {
     if (!file) return;
@@ -54,6 +56,28 @@ export function ScanFoodPage() {
       runRecognition(dataUrl);
     };
     reader.readAsDataURL(file);
+  }
+
+  async function runTextLookup(text: string) {
+    setImageDataUrl(null);
+    setStage('analyzing');
+    try {
+      applyResult(await foodRecognitionService.recognizeText(text));
+    } catch {
+      setScan(null);
+      setStage('error');
+    }
+  }
+
+  function applyResult(result: ScanResult) {
+    setScan(result);
+    if (result.recognitionAvailable && result.candidates.length > 0) {
+      setCandidates(result.candidates);
+      setStage('review');
+    } else {
+      setCandidates([]);
+      setStage('error');
+    }
   }
 
   async function runRecognition(dataUrl: string) {
@@ -182,7 +206,7 @@ export function ScanFoodPage() {
     <div className="space-y-5 pb-6">
       <header>
         <h1 className="text-2xl font-bold text-fg">Scan Food</h1>
-        <p className="mt-1 text-sm text-muted">Take a photo and let AI estimate the nutrition.</p>
+        <p className="mt-1 text-sm text-muted">Take a photo — or just type what you ate — and let AI work out the nutrition.</p>
       </header>
 
       {stage === 'capture' && !hasGeminiKey && (
@@ -229,6 +253,30 @@ export function ScanFoodPage() {
         </div>
       )}
 
+      {stage === 'capture' && (
+        <div className="rounded-xl2 bg-surface p-5 shadow-card">
+          <p className="flex items-center gap-2 font-semibold text-fg">
+            <PencilLine size={17} className="text-primary-600" /> Or type what you ate
+          </p>
+          <p className="mt-1 text-xs text-muted">Any food, with your own amounts — e.g. &quot;150g chicken breast, 200g cooked rice, 2 eggs&quot;. Hebrew works too.</p>
+          <textarea
+            value={typedText}
+            onChange={(e) => setTypedText(e.target.value)}
+            rows={3}
+            placeholder="150g חזה עוף, 200g אורז..."
+            className="mt-3 w-full resize-none rounded-xl border border-default bg-surface-alt px-3 py-2.5 text-sm text-fg outline-none focus:border-primary-400"
+          />
+          <Button
+            fullWidth
+            className="mt-3"
+            disabled={!typedText.trim()}
+            onClick={() => runTextLookup(typedText)}
+          >
+            Calculate nutrition
+          </Button>
+        </div>
+      )}
+
       {stage === 'analyzing' && imageDataUrl && (
         <div className="overflow-hidden rounded-xl2 bg-surface shadow-card">
           <div className="relative aspect-square w-full overflow-hidden bg-surface-alt2">
@@ -239,12 +287,20 @@ export function ScanFoodPage() {
         </div>
       )}
 
+      {stage === 'analyzing' && !imageDataUrl && (
+        <div className="flex flex-col items-center gap-3 rounded-xl2 bg-surface p-10 text-center shadow-card">
+          <Loader2 size={30} className="animate-spin text-primary-600" />
+          <p className="font-semibold text-fg">Looking up your foods…</p>
+          <p className="text-xs text-muted">Finding the nutrition values for what you typed.</p>
+        </div>
+      )}
+
       {stage === 'error' && (
         <div className="space-y-3">
           <ErrorState
-            title={scan?.unavailableReason ? "Couldn't analyze this photo" : "AI couldn't recognize any food"}
+            title={scan?.unavailableReason ? (isText ? "Couldn't look that up" : "Couldn't analyze this photo") : "AI couldn't recognize any food"}
             description={scan?.unavailableReason ?? 'Try a clearer, well-lit photo, or search for the food manually instead.'}
-            onRetry={imageDataUrl ? () => runRecognition(imageDataUrl) : retake}
+            onRetry={imageDataUrl ? () => runRecognition(imageDataUrl) : typedText.trim() ? () => runTextLookup(typedText) : retake}
           />
           {scan?.unavailableDetail && (
             <p className="break-words px-2 text-center text-[11px] text-faint">Details: {scan.unavailableDetail}</p>
@@ -255,7 +311,7 @@ export function ScanFoodPage() {
             </Button>
           )}
           <Button fullWidth variant="secondary" icon={<RotateCcw size={16} />} onClick={retake}>
-            Take a different photo
+            {isText ? 'Edit what I typed' : 'Take a different photo'}
           </Button>
           <Button fullWidth variant="secondary" icon={<Search size={16} />} onClick={() => navigate(`/add/search?${queryString}`)}>
             Search for food manually
@@ -294,13 +350,15 @@ export function ScanFoodPage() {
 
           <div className="rounded-xl bg-orange-50 px-4 py-3 text-sm text-orange-800">
             <div className="flex items-center justify-between">
-              <span>⚠️ AI estimate — review and adjust before adding.</span>
+              <span>{isText ? '✍️ Check the amounts and values before adding.' : '⚠️ AI estimate — review and adjust before adding.'}</span>
               <button onClick={retake} className="flex items-center gap-1 font-semibold underline underline-offset-2">
-                <RotateCcw size={13} /> Retake
+                <RotateCcw size={13} /> {isText ? 'Edit' : 'Retake'}
               </button>
             </div>
             <p className="mt-1 text-xs text-orange-700">
-              The AI can&apos;t reliably see things like oil, butter, sauces or dressings in a photo — use &quot;Add details&quot; below for anything mixed in that isn&apos;t visible.
+              {isText
+                ? 'Values are per-100g reference data scaled to the grams you typed. Add oil, butter or sauces with "Add details" if they were mixed in.'
+                : 'The AI can’t reliably see things like oil, butter, sauces or dressings in a photo — use "Add details" below for anything mixed in that isn’t visible.'}
             </p>
           </div>
 
@@ -317,7 +375,7 @@ export function ScanFoodPage() {
           </div>
 
           <div>
-            <h2 className="mb-2 text-base font-bold text-fg">What we detected</h2>
+            <h2 className="mb-2 text-base font-bold text-fg">{isText ? "What we understood" : "What we detected"}</h2>
             <div className="space-y-3">
               {candidates.map((c) => {
                 const identificationCertain = c.identificationConfidence >= IDENTIFICATION_CONFIDENCE_THRESHOLD;
@@ -346,7 +404,7 @@ export function ScanFoodPage() {
                     </div>
 
                     <div className="mt-3 rounded-lg bg-surface-alt px-3 py-2">
-                      <p className="text-[11px] font-semibold uppercase tracking-wide text-muted">👁️ What we saw</p>
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-muted">{isText ? '✍️ What you wrote' : '👁️ What we saw'}</p>
                       <p className="mt-0.5 text-xs text-fg/80">{c.seenDescription}</p>
                       {c.visibleExtras && c.visibleExtras.length > 0 && (
                         <div className="mt-1.5 flex flex-wrap gap-1">
@@ -406,7 +464,7 @@ export function ScanFoodPage() {
 
                     <div className="mt-3">
                       <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted">
-                        📏 Our estimate{c.estimatedGramsRange ? ` (~${c.estimatedGramsRange[0]}–${c.estimatedGramsRange[1]}g)` : ''}
+                        {isText ? '📏 Amount' : '📏 Our estimate'}{c.estimatedGramsRange ? ` (~${c.estimatedGramsRange[0]}–${c.estimatedGramsRange[1]}g)` : ''}
                         {c.unitCount && c.unitLabel ? ` · ~${c.unitCount} ${c.unitLabel}` : ''}
                       </p>
                       <div className="flex items-center justify-center rounded-xl bg-surface-alt py-3">
