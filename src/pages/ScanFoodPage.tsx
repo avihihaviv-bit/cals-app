@@ -303,7 +303,7 @@ export function ScanFoodPage() {
             onRetry={imageDataUrl ? () => runRecognition(imageDataUrl) : typedText.trim() ? () => runTextLookup(typedText) : retake}
           />
           {scan?.unavailableDetail && (
-            <p className="break-words px-2 text-center text-[11px] text-faint">Details: {scan.unavailableDetail}</p>
+            <p className="break-words px-2 text-center text-[11px] text-faint">Details: {scan.unavailableDetail} · v{__BUILD_ID__.split(' ')[0]}</p>
           )}
           {scan?.needsApiKey && (
             <Button fullWidth icon={<KeyRound size={16} />} onClick={() => navigate('/settings')}>

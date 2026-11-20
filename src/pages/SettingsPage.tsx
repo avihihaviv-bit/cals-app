@@ -259,6 +259,8 @@ export function SettingsPage() {
           </button>
         </div>
       </SettingsSection>
+
+      <p className="text-center text-[11px] text-faint">App version {__BUILD_ID__}</p>
     </div>
   );
 }
