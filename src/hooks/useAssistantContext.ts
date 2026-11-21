@@ -16,5 +16,13 @@ export function useAssistantContext(): AssistantContext {
 
   const streakDays = useMemo(() => computeStreak(entries), [entries]);
 
-  return { totals: diary.totals, targets, last7Days, streakDays, isMinor: profile?.isMinor ?? false };
+  return {
+    totals: diary.totals,
+    targets,
+    last7Days,
+    streakDays,
+    isMinor: profile?.isMinor ?? false,
+    profile,
+    todayEntries: diary.entries,
+  };
 }

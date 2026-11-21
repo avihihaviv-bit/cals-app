@@ -3,7 +3,7 @@ import { matchRestaurants, type RestaurantMatch } from './RestaurantService';
 import { parseFoodPhrase, type ParsedFoodMention } from '@/utils/nlFoodParser';
 import { generateDailySummary, generateStatsInsights, type DailySummary, type StatsInsight } from '@/utils/insights';
 import type { DayStat } from '@/hooks/useHistoryStats';
-import type { MacroTargets, NutritionFacts } from '@/types';
+import type { DiaryEntry, MacroTargets, NutritionFacts, UserProfile } from '@/types';
 
 export interface AssistantContext {
   totals: NutritionFacts;
@@ -11,6 +11,9 @@ export interface AssistantContext {
   last7Days: DayStat[]; // includes today, oldest first
   streakDays: number;
   isMinor: boolean;
+  /** Extra context for the live AI chat only — the rule-based answers never need it. */
+  profile?: UserProfile | null;
+  todayEntries?: DiaryEntry[];
 }
 
 export type AssistantCard =
@@ -19,7 +22,8 @@ export type AssistantCard =
   | { type: 'restaurant_matches'; matches: RestaurantMatch[] }
   | { type: 'daily_summary'; summary: DailySummary }
   | { type: 'stats_insights'; insights: StatsInsight[] }
-  | { type: 'open_coach'; view: 'eat' | 'analyze' | 'recipe' | 'plan'; label: string };
+  | { type: 'open_coach'; view: 'eat' | 'analyze' | 'recipe' | 'plan'; label: string }
+  | { type: 'ai_food_lookup'; description: string };
 
 export interface AssistantAnswer {
   text: string;
@@ -47,7 +51,16 @@ const ADD_VERB_HE = /^(אכלתי|הוספתי|אני אוכל|תוסיף|רשמ
 // pattern.
 const QUESTION_START_EN = /^(what|how|why|when|where|who|which|can|could|should|is|are|do|does|find|analyze|show|will|would)\b/i;
 const QUESTION_START_HE = /^(מה|איך|למה|מתי|איפה|מי|איזה|האם|כמה|תמצא|תבדוק|תראה|תגיד|יש)/;
-const isHebrewText = (s: string) => /[\u0590-\u05FF]/.test(s);
+export const isHebrewText = (s: string) => /[\u0590-\u05FF]/.test(s);
+
+/** If the input is a food-logging statement ("I ate…", "אכלתי…"), returns just the food part; otherwise null. */
+export function extractFoodLogText(rawInput: string): string | null {
+  const input = rawInput.trim();
+  const q = input.toLowerCase();
+  if (!ADD_VERB_EN.test(q) && !ADD_VERB_HE.test(input)) return null;
+  const stripped = input.replace(ADD_VERB_EN, '').replace(ADD_VERB_HE, '').trim();
+  return stripped || null;
+}
 
 /**
  * The single brain behind both the dedicated Coach page and the global

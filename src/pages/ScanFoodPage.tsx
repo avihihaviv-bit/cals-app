@@ -1,4 +1,4 @@
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useEffect, useRef, useState } from 'react';
 import { Camera, ImagePlus, KeyRound, Loader2, NotebookPen, PencilLine, RotateCcw, ScanLine, Search, X } from 'lucide-react';
 import { getGeminiKey } from '@/utils/geminiKey';
@@ -44,8 +44,19 @@ export function ScanFoodPage() {
   const [detailsOpenFor, setDetailsOpenFor] = useState<string | null>(null);
   const [swapSearchFor, setSwapSearchFor] = useState<string | null>(null);
   const [hasGeminiKey] = useState(() => !!getGeminiKey());
-  const [typedText, setTypedText] = useState('');
+  const [searchParams] = useSearchParams();
+  const initialText = searchParams.get('text') ?? '';
+  const [typedText, setTypedText] = useState(initialText);
+  const autoRanText = useRef(false);
   const isText = scan?.inputKind === 'text' || (stage === 'analyzing' && !imageDataUrl);
+
+  // Arriving with ?text= (from food search or the AI chat) looks it up right away.
+  useEffect(() => {
+    if (autoRanText.current || !initialText.trim()) return;
+    autoRanText.current = true;
+    runTextLookup(initialText);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function handleFile(file: File | undefined) {
     if (!file) return;

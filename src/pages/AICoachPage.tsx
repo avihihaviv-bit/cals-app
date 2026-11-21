@@ -24,7 +24,8 @@ import { AIRestaurantFinderView } from '@/components/aicoach/AIRestaurantFinderV
 import { BiasedMealView } from '@/components/aicoach/BiasedMealView';
 import { CalculationDebugView } from '@/components/aicoach/CalculationDebugView';
 import { renderCard } from '@/components/assistant/AIAssistantPanel';
-import { answerAssistant, getQuickActions } from '@/services/AssistantService';
+import { getQuickActions } from '@/services/AssistantService';
+import { answerSmart } from '@/services/SmartAssistant';
 import { useAssistantContext } from '@/hooks/useAssistantContext';
 import { useSpeechRecognition } from '@/hooks/useSpeechRecognition';
 import { useAICoachData } from '@/hooks/useAICoachData';
@@ -286,19 +287,19 @@ function EmbeddedAskAI({ t, language }: { t: ReturnType<typeof useCoachT>; langu
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
   }, [turns, thinking]);
 
-  function send(text: string) {
-    if (!text.trim()) return;
+  async function send(text: string) {
+    if (!text.trim() || thinking) return;
     const userTurn: ChatTurn = { id: `u${Date.now()}`, role: 'user', text };
+    const history = turns.map((t) => ({ role: t.role, text: t.text }));
     setTurns((prev) => [...prev, userTurn]);
     setInput('');
     setThinking(true);
-    // A brief, deliberate pause before the (instant, on-device, rule-based) answer appears —
-    // a zero-delay reply reads as robotic; this reads as considered without being slow.
-    window.setTimeout(() => {
-      const answer = answerAssistant(text, ctx);
+    try {
+      const answer = await answerSmart(text, ctx, history);
       setTurns((prev) => [...prev, { id: `a${Date.now()}`, role: 'assistant', text: answer.text, card: answer.card }]);
+    } finally {
       setThinking(false);
-    }, 380);
+    }
   }
 
   return (
@@ -318,7 +319,7 @@ function EmbeddedAskAI({ t, language }: { t: ReturnType<typeof useCoachT>; langu
                     turn.role === 'user' ? 'bg-primary-500 text-white' : 'bg-surface-alt text-fg'
                   }`}
                 >
-                  {turn.text}
+                  <p dir="auto" className="whitespace-pre-line">{turn.text}</p>
                 </div>
                 {turn.card && <div className="mt-1.5">{renderCard(turn.card, () => {})}</div>}
               </div>
@@ -376,6 +377,7 @@ function EmbeddedAskAI({ t, language }: { t: ReturnType<typeof useCoachT>; langu
           id="coach-ask-input"
           value={input}
           onChange={(e) => setInput(e.target.value)}
+          dir="auto"
           placeholder={t('typeSomething')}
           className="input flex-1 py-2.5"
         />

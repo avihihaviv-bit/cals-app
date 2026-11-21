@@ -2,7 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { ArrowRight, Mic, Send, Sparkles, TrendingDown, TrendingUp, X } from 'lucide-react';
-import { answerAssistant, getQuickActions } from '@/services/AssistantService';
+import { getGeminiKey } from '@/utils/geminiKey';
+import { getQuickActions } from '@/services/AssistantService';
+import { answerSmart } from '@/services/SmartAssistant';
 import { useAssistantContext } from '@/hooks/useAssistantContext';
 import { useSpeechRecognition } from '@/hooks/useSpeechRecognition';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
@@ -10,6 +12,7 @@ import { useLocaleStore } from '@/store/useLocaleStore';
 import { FoodConfirmCard } from './FoodConfirmCard';
 import { MealRecList } from './MealRecList';
 import { RestaurantMatchList } from './RestaurantMatchList';
+import { AIFoodLookupCard } from './AIFoodLookupCard';
 import type { AssistantCard } from '@/services/AssistantService';
 
 interface ChatMessage {
@@ -25,9 +28,18 @@ export function AIAssistantPanel({ open, onClose }: { open: boolean; onClose: ()
   const isDesktop = useMediaQuery('(min-width: 1024px)');
   const language = useLocaleStore((s) => s.language);
   const [messages, setMessages] = useState<ChatMessage[]>([
-    { id: 'welcome', role: 'assistant', text: "Hey! What can I help you with?" },
+    {
+      id: 'welcome',
+      role: 'assistant',
+      text:
+        language === 'he'
+          ? 'היי! אפשר לשאול אותי כל שאלה על תזונה, או לכתוב "אכלתי…" ואני ארשום את זה.'
+          : 'Hey! Ask me anything about food and nutrition, or write "I ate…" and I\'ll log it.',
+    },
   ]);
   const [input, setInput] = useState('');
+  const [thinking, setThinking] = useState(false);
+  const aiLive = !!getGeminiKey();
   const scrollRef = useRef<HTMLDivElement>(null);
   const quickActions = getQuickActions(language);
 
@@ -38,7 +50,7 @@ export function AIAssistantPanel({ open, onClose }: { open: boolean; onClose: ()
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
-  }, [messages]);
+  }, [messages, thinking]);
 
   useEffect(() => {
     if (!open) return;
@@ -49,13 +61,19 @@ export function AIAssistantPanel({ open, onClose }: { open: boolean; onClose: ()
     return () => window.removeEventListener('keydown', onKey);
   }, [open, onClose]);
 
-  function send(text: string) {
-    if (!text.trim()) return;
+  async function send(text: string) {
+    if (!text.trim() || thinking) return;
     const userMsg: ChatMessage = { id: `u${Date.now()}`, role: 'user', text };
-    const answer = answerAssistant(text, ctx);
-    const assistantMsg: ChatMessage = { id: `a${Date.now()}`, role: 'assistant', text: answer.text, card: answer.card };
-    setMessages((m) => [...m, userMsg, assistantMsg]);
+    const history = messages.filter((m) => m.id !== 'welcome').map((m) => ({ role: m.role, text: m.text }));
+    setMessages((m) => [...m, userMsg]);
     setInput('');
+    setThinking(true);
+    try {
+      const answer = await answerSmart(text, ctx, history);
+      setMessages((m) => [...m, { id: `a${Date.now()}`, role: 'assistant', text: answer.text, card: answer.card }]);
+    } finally {
+      setThinking(false);
+    }
   }
 
   const panelMotion = isDesktop
@@ -84,6 +102,9 @@ export function AIAssistantPanel({ open, onClose }: { open: boolean; onClose: ()
               <h2 className="flex items-center gap-2 text-base font-bold text-fg">
                 <Sparkles size={18} className="text-primary-500" />
                 AI Assistant
+                {aiLive && (
+                  <span className="rounded-full bg-primary-50 px-2 py-0.5 text-[10px] font-semibold text-primary-700">Gemini</span>
+                )}
               </h2>
               <button
                 onClick={onClose}
@@ -102,18 +123,35 @@ export function AIAssistantPanel({ open, onClose }: { open: boolean; onClose: ()
                       m.role === 'user' ? 'bg-primary-500 text-white' : 'bg-surface-alt text-fg'
                     }`}
                   >
-                    <p>{m.text}</p>
+                    <p dir="auto" className="whitespace-pre-line">{m.text}</p>
                     {m.card && (
                       <div className="mt-2.5">
-                        {renderCard(m.card, (view) => {
-                          onClose();
-                          navigate(`/coach?view=${view}`);
-                        })}
+                        {renderCard(
+                          m.card,
+                          (view) => {
+                            onClose();
+                            navigate(`/coach?view=${view}`);
+                          },
+                          onClose,
+                        )}
                       </div>
                     )}
                   </div>
                 </div>
               ))}
+              {thinking && (
+                <div className="flex justify-start">
+                  <div className="flex items-center gap-1 rounded-2xl bg-surface-alt px-4 py-3 shadow-card" aria-label="Thinking">
+                    {[0, 1, 2].map((i) => (
+                      <span
+                        key={i}
+                        className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted"
+                        style={{ animationDelay: `${i * 0.15}s` }}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
               {speech.listening && (
                 <div className="flex justify-end">
                   <div className="max-w-[88%] rounded-2xl bg-primary-100 px-3.5 py-2.5 text-sm italic text-primary-700">
@@ -157,11 +195,13 @@ export function AIAssistantPanel({ open, onClose }: { open: boolean; onClose: ()
               <input
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                placeholder="Ask anything, or tell me what you ate…"
+                dir="auto"
+                placeholder={language === 'he' ? 'שאלו כל דבר, או כתבו מה אכלתם…' : 'Ask anything, or tell me what you ate…'}
                 className="input flex-1 py-2.5"
               />
               <button
                 type="submit"
+                disabled={thinking}
                 aria-label="Send"
                 className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary-500 text-white transition hover:bg-primary-600 active:scale-90"
               >
@@ -175,8 +215,14 @@ export function AIAssistantPanel({ open, onClose }: { open: boolean; onClose: ()
   );
 }
 
-export function renderCard(card: AssistantCard, openCoach: (view: 'eat' | 'analyze' | 'recipe' | 'plan') => void) {
+export function renderCard(
+  card: AssistantCard,
+  openCoach: (view: 'eat' | 'analyze' | 'recipe' | 'plan') => void,
+  onNavigate?: () => void,
+) {
   switch (card.type) {
+    case 'ai_food_lookup':
+      return <AIFoodLookupCard description={card.description} onNavigate={onNavigate} />;
     case 'open_coach':
       return (
         <button

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, SearchX } from 'lucide-react';
+import { Search, SearchX, Sparkles } from 'lucide-react';
 import { foodSearchService } from '@/services/FoodSearchService';
 import { FOODS } from '@/data/foods';
 import { resolveFoodRef, type ResolvedFood } from '@/utils/resolveFoodRef';
@@ -142,13 +142,30 @@ export function FoodSearchPage() {
         </div>
       )}
 
+      {debouncedQuery.trim() && (
+        <button
+          onClick={() => navigate(`/add/scan?${queryString}&text=${encodeURIComponent(debouncedQuery.trim())}`)}
+          className="flex w-full items-center gap-3 rounded-xl2 border border-primary-200 bg-primary-50 p-4 text-left transition hover:bg-primary-100"
+        >
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary-500 text-white">
+            <Sparkles size={18} />
+          </span>
+          <span className="min-w-0">
+            <span className="block truncate text-sm font-semibold text-primary-800" dir="auto">
+              Calculate “{debouncedQuery.trim()}” with AI
+            </span>
+            <span className="block text-xs text-primary-700">Any food or dish — add an amount like “150g” for exact values.</span>
+          </span>
+        </button>
+      )}
+
       {!error && !loading && (debouncedQuery.trim() || browsing) && displayedResults.length === 0 && (
         <EmptyState
           icon={<SearchX size={22} />}
           title="No results"
           description={
             debouncedQuery.trim()
-              ? `We couldn't find "${debouncedQuery}" matching this filter.`
+              ? `"${debouncedQuery}" isn't in the built-in list — use the AI button above to calculate it.`
               : "No foods match this filter yet."
           }
         />

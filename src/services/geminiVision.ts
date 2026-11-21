@@ -234,15 +234,14 @@ export async function listUsableModels(apiKey: string): Promise<string[]> {
   return models;
 }
 
-function extractJsonText(data: any): string | null {
+function extractText(data: any): string | null {
   const parts: any[] = data?.candidates?.[0]?.content?.parts ?? [];
   const text = parts
     .filter((p) => typeof p?.text === 'string' && !p.thought)
     .map((p) => p.text)
     .join('')
     .trim();
-  if (!text) return null;
-  return text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  return text || null;
 }
 
 const TEXT_SYSTEM_PROMPT = `You are a nutrition-lookup system feeding a nutrition tracking app. The user typed what they ate, possibly with amounts, in any language (often Hebrew or English).
@@ -275,9 +274,7 @@ export function analyzeFoodText(apiKey: string, description: string): Promise<Ra
 }
 
 /**
- * Runs a structured Gemini request. Tries the best available models in order,
- * moving on when one is overloaded, rate-limited, or unavailable — a different
- * model is a different capacity pool, so one being busy rarely means all are.
+ * Runs a structured Gemini request and parses the JSON it returns.
  */
 async function generateAnalysis(
   apiKey: string,
@@ -285,6 +282,58 @@ async function generateAnalysis(
   userParts: unknown[],
   blockedMessage: string,
 ): Promise<RawAnalysisResponse> {
+  return runWithModels<RawAnalysisResponse>(
+    apiKey,
+    {
+      system_instruction: { parts: [{ text: systemPrompt }] },
+      contents: [{ role: 'user', parts: userParts }],
+      generationConfig: { responseMimeType: 'application/json', responseSchema: RESPONSE_SCHEMA, temperature: 0.2 },
+    },
+    blockedMessage,
+    (text) => {
+      try {
+        return JSON.parse(text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')) as RawAnalysisResponse;
+      } catch {
+        return null;
+      }
+    },
+  );
+}
+
+export interface ChatTurn {
+  role: 'user' | 'assistant';
+  text: string;
+}
+
+/** A free-form chat reply (plain text). `history` must end with the user's new message. */
+export function chatWithGemini(apiKey: string, systemPrompt: string, history: ChatTurn[]): Promise<string> {
+  // Gemini requires the conversation to start with a user turn.
+  const firstUser = history.findIndex((t) => t.role === 'user');
+  const turns = firstUser >= 0 ? history.slice(firstUser) : history;
+  return runWithModels<string>(
+    apiKey,
+    {
+      system_instruction: { parts: [{ text: systemPrompt }] },
+      contents: turns.map((t) => ({ role: t.role === 'user' ? 'user' : 'model', parts: [{ text: t.text }] })),
+      generationConfig: { temperature: 0.6, maxOutputTokens: 2048 },
+    },
+    'Gemini declined to answer that — try asking differently.',
+    (text) => (text.trim() ? text.trim() : null),
+  );
+}
+
+/**
+ * Sends a request to the best available models in order, moving on when one
+ * is overloaded, rate-limited, unavailable, or returns something unusable — a
+ * different model is a different capacity pool, so one being busy rarely
+ * means all are.
+ */
+async function runWithModels<T>(
+  apiKey: string,
+  requestBody: unknown,
+  blockedMessage: string,
+  parse: (text: string) => T | null,
+): Promise<T> {
   let models: string[];
   try {
     models = await listUsableModels(apiKey);
@@ -293,12 +342,7 @@ async function generateAnalysis(
     models = FALLBACK_MODELS;
   }
 
-  const body = JSON.stringify({
-    system_instruction: { parts: [{ text: systemPrompt }] },
-    contents: [{ role: 'user', parts: userParts }],
-    generationConfig: { responseMimeType: 'application/json', responseSchema: RESPONSE_SCHEMA, temperature: 0.2 },
-  });
-
+  const body = JSON.stringify(requestBody);
   const failures: string[] = [];
   let sawQuota = false;
 
@@ -314,17 +358,17 @@ async function generateAnalysis(
       if (data?.promptFeedback?.blockReason) {
         throw new GeminiError('blocked', blockedMessage, `blockReason: ${data.promptFeedback.blockReason}`);
       }
-      const text = extractJsonText(data);
+      const text = extractText(data);
       if (!text) {
         failures.push(`${model}: empty response (finishReason ${data?.candidates?.[0]?.finishReason ?? 'unknown'})`);
         continue;
       }
-      try {
-        return JSON.parse(text) as RawAnalysisResponse;
-      } catch {
-        failures.push(`${model}: response was not valid JSON`);
+      const parsed = parse(text);
+      if (parsed === null) {
+        failures.push(`${model}: response was not in the expected format`);
         continue;
       }
+      return parsed;
     }
 
     const bodyText = await res.text();
