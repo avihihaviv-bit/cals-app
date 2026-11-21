@@ -29,6 +29,9 @@ export interface RawAnalysisItem {
   per100gProteinG: number;
   per100gCarbsG: number;
   per100gFatG: number;
+  hebrewName?: string;
+  emoji?: string;
+  naturalnessScore?: number;
   boxXPct?: number;
   boxYPct?: number;
   boxWPct?: number;
@@ -98,6 +101,12 @@ const RESPONSE_SCHEMA = {
           per100gProteinG: { type: 'NUMBER', description: 'Per-100g protein grams.' },
           per100gCarbsG: { type: 'NUMBER', description: 'Per-100g carb grams.' },
           per100gFatG: { type: 'NUMBER', description: 'Per-100g fat grams.' },
+          hebrewName: { type: 'STRING', description: 'The common Hebrew name of this food, e.g. "חזה עוף".' },
+          emoji: { type: 'STRING', description: 'One emoji that best represents this food.' },
+          naturalnessScore: {
+            type: 'INTEGER',
+            description: 'How close the food is to its whole, unprocessed form, 1-100 (fresh fruit ~98, plain grilled chicken ~90, white bread ~45, candy/soda ~10). Not a health judgment.',
+          },
           boxXPct: { type: 'NUMBER', description: 'Left edge of the item, 0-100 % of image width.' },
           boxYPct: { type: 'NUMBER', description: 'Top edge of the item, 0-100 % of image height.' },
           boxWPct: { type: 'NUMBER', description: 'Item width, 0-100 % of image width.' },
@@ -139,7 +148,7 @@ Hard rules:
 - If confidence in an identification is below 70, list real alternatives.
 - Only set "unusable" if the photo truly cannot support even a rough estimate.
 - boxXPct/boxYPct/boxWPct/boxHPct are optional — omit them if unsure of the region.
-- Write bestGuessName and alternatives in English.
+- Write bestGuessName and alternatives in English; also give hebrewName, one emoji and naturalnessScore per item.
 Respond with ONLY the JSON object matching the schema.`;
 
 let cachedModels: { key: string; models: string[] } | null = null;
@@ -254,9 +263,91 @@ Rules:
 - seenDescription must quote what the user wrote for that item (e.g. 'You wrote: "150g chicken breast"') — do not invent preparation details.
 - identificationConfidence is how sure you are that bestGuessName matches what they meant; if below 70 list alternatives.
 - Give per-100g calories/protein/carbs/fat for the food as typically prepared/eaten (cooked weight if they said cooked). Use well-known reference values (USDA-style).
+- Also give hebrewName (common Hebrew name), one emoji, and naturalnessScore.
 - Do not include bounding boxes.
 - If the text is not about food at all, set isFood false.
 Respond with ONLY the JSON object matching the schema.`;
+
+export interface RawLabelResponse {
+  isLabel: boolean;
+  unreadableReason?: string;
+  productName?: string;
+  hebrewName?: string;
+  brand?: string;
+  emoji?: string;
+  isLiquid?: boolean;
+  per100Calories?: number;
+  per100ProteinG?: number;
+  per100CarbsG?: number;
+  per100SugarG?: number;
+  per100FatG?: number;
+  per100FiberG?: number;
+  per100SodiumMg?: number;
+  servingSizeG?: number;
+  servingLabel?: string;
+  packageSizeG?: number;
+  convertedFromServing?: boolean;
+  naturalnessScore?: number;
+}
+
+const LABEL_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    isLabel: { type: 'BOOLEAN', description: 'True only if a nutrition facts table is visible and readable.' },
+    unreadableReason: { type: 'STRING', description: 'Why the label could not be read, when isLabel is false.' },
+    productName: { type: 'STRING', description: 'Product name in English (translate if needed), e.g. "Cottage cheese 5%".' },
+    hebrewName: { type: 'STRING', description: 'Product name in Hebrew if shown on the package or commonly used.' },
+    brand: { type: 'STRING', description: 'Brand, if visible.' },
+    emoji: { type: 'STRING', description: 'One emoji representing the product.' },
+    isLiquid: { type: 'BOOLEAN', description: 'True when values are per 100 ml.' },
+    per100Calories: { type: 'NUMBER', description: 'Energy in kcal per 100 g/ml, exactly as printed (use kcal, not kJ).' },
+    per100ProteinG: { type: 'NUMBER', description: 'Protein grams per 100 g/ml.' },
+    per100CarbsG: { type: 'NUMBER', description: 'Total carbohydrate grams per 100 g/ml.' },
+    per100SugarG: { type: 'NUMBER', description: 'Sugars grams per 100 g/ml, if printed.' },
+    per100FatG: { type: 'NUMBER', description: 'Total fat grams per 100 g/ml.' },
+    per100FiberG: { type: 'NUMBER', description: 'Dietary fiber grams per 100 g/ml, if printed.' },
+    per100SodiumMg: { type: 'NUMBER', description: 'Sodium mg per 100 g/ml, if printed.' },
+    servingSizeG: { type: 'NUMBER', description: 'Serving size in grams/ml, if printed.' },
+    servingLabel: { type: 'STRING', description: 'Serving description in English, e.g. "1 cup (200g)", if printed.' },
+    packageSizeG: { type: 'NUMBER', description: 'Net weight of the whole package in g/ml, if visible.' },
+    convertedFromServing: { type: 'BOOLEAN', description: 'True if the label only gave per-serving values and you converted them to per-100.' },
+    naturalnessScore: { type: 'INTEGER', description: 'How close to whole/unprocessed, 1-100, judged from the product and its ingredient list if visible.' },
+  },
+  required: ['isLabel'],
+};
+
+const LABEL_SYSTEM_PROMPT = `You read nutrition facts tables from photos of food packaging for a nutrition tracking app. Labels may be in Hebrew, English, Arabic or other languages. Israeli labels show "ערכים תזונתיים" with a column "ל-100 גרם" / "ל-100 מ\"ל".
+
+Rules:
+- Copy the numbers EXACTLY as printed. Never estimate or "correct" a printed value.
+- Always report values per 100 g (or per 100 ml for drinks). If the label only shows per-serving values, convert using the printed serving size and set convertedFromServing true.
+- Energy: use kcal (קלוריות / אנרגיה בקלוריות). If only kJ is printed, divide by 4.184.
+- Carbohydrates = total carbohydrates (פחמימות), fat = total fat (שומנים), sodium in mg (נתרן).
+- Leave a field out if it is not printed. Do not invent it.
+- If no nutrition table is visible or it's too blurry to read the numbers, set isLabel false and explain briefly in unreadableReason (e.g. "The numbers are blurry — move closer").
+Respond with ONLY the JSON object.`;
+
+/** Reads a nutrition facts label from a package photo — exact printed values, per 100 g/ml. */
+export function analyzeNutritionLabel(apiKey: string, mediaType: string, base64Data: string): Promise<RawLabelResponse> {
+  return runWithModels<RawLabelResponse>(
+    apiKey,
+    {
+      system_instruction: { parts: [{ text: LABEL_SYSTEM_PROMPT }] },
+      contents: [
+        { role: 'user', parts: [{ inline_data: { mime_type: mediaType, data: base64Data } }, { text: 'Read this nutrition label.' }] },
+      ],
+      generationConfig: { responseMimeType: 'application/json', responseSchema: LABEL_SCHEMA, temperature: 0 },
+    },
+    'Gemini declined to read this photo — try a different shot.',
+    (text) => {
+      try {
+        return JSON.parse(text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')) as RawLabelResponse;
+      } catch {
+        return null;
+      }
+    },
+  );
+}
 
 /** Analyzes a food photo. */
 export function analyzeFoodPhoto(apiKey: string, mediaType: string, base64Data: string): Promise<RawAnalysisResponse> {

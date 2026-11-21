@@ -243,6 +243,8 @@ export interface ScannedFoodCandidate {
   boundingBox?: { xPct: number; yPct: number; wPct: number; hPct: number };
   /** Hidden ingredients (oil, sauce, etc.) the user manually added because the AI can't see them in the photo. */
   addedDetails?: HiddenIngredientEntry[];
+  /** For foods not in the built-in database: the food record to save into "My foods" when this is logged, so it can be found and re-logged later. */
+  customFood?: FoodItem;
 }
 
 /** A manually-added hidden ingredient (e.g. cooking oil) not visible in the scanned photo. */
@@ -261,7 +263,7 @@ export interface ScanResult {
   /** False when real recognition genuinely could not run (no backend configured, call failed, or the model reported the photo isn't usable) — the UI must never show fabricated candidates in this case, only a clear message plus a manual-search path. */
   recognitionAvailable: boolean;
   /** Whether this result came from analyzing a photo or from text the user typed. Defaults to 'photo'. */
-  inputKind?: 'photo' | 'text';
+  inputKind?: 'photo' | 'text' | 'label';
   /** Present when recognitionAvailable is false, to explain why (e.g. "photo too blurry to identify anything"). */
   unavailableReason?: string;
   /** Raw technical detail behind unavailableReason (HTTP status / provider message), shown small so failures are diagnosable without server logs. */

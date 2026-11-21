@@ -1,4 +1,5 @@
 import type { FoodItem, NaturalnessInfo, ServingOption } from '@/types';
+import { useAppStore } from '@/store/useAppStore';
 
 const serving = (label: string, unit: ServingOption['unit'], grams: number): ServingOption => ({
   label,
@@ -400,6 +401,7 @@ export const FOODS: FoodItem[] = [
   },
 ];
 
+/** Built-in foods first, then the user's own saved foods ("My foods"). */
 export function findFoodById(id: string): FoodItem | undefined {
-  return FOODS.find((f) => f.id === id);
+  return FOODS.find((f) => f.id === id) ?? useAppStore.getState().customFoods.find((f) => f.id === id);
 }

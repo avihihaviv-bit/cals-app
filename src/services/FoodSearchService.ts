@@ -1,4 +1,5 @@
 import { FOODS, findFoodById } from '@/data/foods';
+import { useAppStore } from '@/store/useAppStore';
 import type { FoodItem, FoodSearchQuery } from '@/types';
 
 /**
@@ -24,10 +25,11 @@ class MockFoodSearchService implements FoodSearchService {
     await delay(NETWORK_DELAY_MS);
     const q = normalize(text);
     if (!q) return [];
-    const results = FOODS.filter(
-      (f) => normalize(f.name).includes(q) || (f.nameHe && f.nameHe.includes(q)) || (f.category && normalize(f.category).includes(q)),
-    );
-    return results.slice(0, limit);
+    const matches = (f: FoodItem) =>
+      normalize(f.name).includes(q) || (!!f.nameHe && f.nameHe.includes(q)) || (!!f.category && normalize(f.category).includes(q));
+    // The user's own saved foods (AI lookups, scanned labels) come first — they're what they actually eat.
+    const mine = useAppStore.getState().customFoods.filter(matches);
+    return [...mine, ...FOODS.filter(matches)].slice(0, limit);
   }
 
   async getById(id: string): Promise<FoodItem | undefined> {

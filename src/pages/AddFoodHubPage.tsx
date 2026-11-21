@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Camera, ChevronRight, Clock3, Heart, Search, Store } from 'lucide-react';
+import { Bookmark, Camera, ChevronRight, Clock3, Heart, Search, Sparkles, Store, Trash2 } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import { useAddContext } from '@/hooks/useAddContext';
 import { resolveFoodRef } from '@/utils/resolveFoodRef';
@@ -15,7 +15,17 @@ export function AddFoodHubPage() {
   const navigate = useNavigate();
   const favorites = useAppStore((s) => s.favorites);
   const recentItems = useAppStore((s) => s.recentItems);
+  const customFoods = useAppStore((s) => s.customFoods);
+  const deleteCustomFood = useAppStore((s) => s.deleteCustomFood);
   const [activeRef, setActiveRef] = useState<FoodRef | null>(null);
+  const [quickText, setQuickText] = useState('');
+  const [showAllMine, setShowAllMine] = useState(false);
+
+  function submitQuickText() {
+    const text = quickText.trim();
+    if (!text) return;
+    navigate(`/add/scan?${queryString}&text=${encodeURIComponent(text)}`);
+  }
 
   function handleAdded() {
     navigate(isToday(date) ? '/' : `/diary?date=${date}`);
@@ -33,6 +43,13 @@ export function AddFoodHubPage() {
     .filter((f): f is NonNullable<typeof f> => !!f)
     .slice(0, 6);
 
+  const myFoods = customFoods
+    .slice()
+    .reverse()
+    .map((f) => resolveFoodRef({ refId: f.id, refType: 'food' }))
+    .filter((f): f is NonNullable<typeof f> => !!f);
+  const shownMyFoods = showAllMine ? myFoods : myFoods.slice(0, 5);
+
   return (
     <div className="space-y-7 pb-6">
       <header>
@@ -43,20 +60,50 @@ export function AddFoodHubPage() {
         </p>
       </header>
 
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          submitQuickText();
+        }}
+        className="rounded-xl2 bg-surface p-4 shadow-card"
+      >
+        <label htmlFor="quick-add" className="flex items-center gap-1.5 text-sm font-bold text-fg">
+          <Sparkles size={15} className="text-primary-500" /> What did you eat?
+        </label>
+        <div className="mt-2.5 flex gap-2">
+          <input
+            id="quick-add"
+            dir="auto"
+            value={quickText}
+            onChange={(e) => setQuickText(e.target.value)}
+            placeholder="2 ביצים, פרוסת לחם, 150g קוטג׳"
+            className="input flex-1 py-2.5"
+          />
+          <button
+            type="submit"
+            disabled={!quickText.trim()}
+            className="shrink-0 rounded-xl bg-primary-500 px-4 text-sm font-semibold text-white transition hover:bg-primary-600 disabled:opacity-50"
+          >
+            Go
+          </button>
+        </div>
+        <p className="mt-1.5 text-[11px] text-muted">Write it in any words — AI works out the calories and macros.</p>
+      </form>
+
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <AddOptionCard
           to={`/add/scan?${queryString}`}
           icon={<Camera size={22} />}
           emoji="📸"
           title="Scan Food"
-          description="Snap a photo, AI estimates the nutrition"
+          description="Photo of your meal or a nutrition label"
         />
         <AddOptionCard
           to={`/add/search?${queryString}`}
           icon={<Search size={22} />}
           emoji="🔎"
           title="Search Food"
-          description="Search our nutrition database"
+          description="Built-in foods + everything you've saved"
         />
         <AddOptionCard
           to={`/add/restaurants?${queryString}`}
@@ -85,6 +132,38 @@ export function AddFoodHubPage() {
           />
         )}
       </section>
+
+      {myFoods.length > 0 && (
+        <section>
+          <h2 className="mb-2.5 flex items-center gap-1.5 text-sm font-bold text-fg">
+            <Bookmark size={15} className="text-primary-500" /> My foods
+            <span className="font-normal text-muted">({myFoods.length})</span>
+          </h2>
+          <div className="space-y-2">
+            {shownMyFoods.map((food) => (
+              <div key={food.id} className="flex items-center gap-2">
+                <div className="min-w-0 flex-1">
+                  <FoodRow food={food} onClick={() => setActiveRef({ refId: food.id, refType: 'food' })} />
+                </div>
+                <button
+                  onClick={() => {
+                    if (window.confirm(`Remove "${food.name}" from My foods? Diary entries stay.`)) deleteCustomFood(food.id);
+                  }}
+                  aria-label={`Remove ${food.name} from My foods`}
+                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-faint transition hover:bg-red-50 hover:text-red-500"
+                >
+                  <Trash2 size={15} />
+                </button>
+              </div>
+            ))}
+          </div>
+          {myFoods.length > 5 && (
+            <button onClick={() => setShowAllMine((v) => !v)} className="mt-2 text-xs font-semibold text-primary-700">
+              {showAllMine ? 'Show less' : `Show all ${myFoods.length}`}
+            </button>
+          )}
+        </section>
+      )}
 
       <section>
         <h2 className="mb-2.5 flex items-center gap-1.5 text-sm font-bold text-fg">

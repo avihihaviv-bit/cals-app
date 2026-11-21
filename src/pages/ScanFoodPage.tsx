@@ -1,6 +1,6 @@
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useEffect, useRef, useState } from 'react';
-import { Camera, ImagePlus, KeyRound, Loader2, NotebookPen, PencilLine, RotateCcw, ScanLine, Search, X } from 'lucide-react';
+import { Camera, ImagePlus, KeyRound, Loader2, NotebookPen, PencilLine, RotateCcw, ScanLine, Search, Tag, X } from 'lucide-react';
 import { getGeminiKey } from '@/utils/geminiKey';
 import { foodRecognitionService, IDENTIFICATION_CONFIDENCE_THRESHOLD } from '@/services/FoodRecognitionService';
 import { foodSearchService } from '@/services/FoodSearchService';
@@ -32,6 +32,8 @@ export function ScanFoodPage() {
   const navigate = useNavigate();
   const addDiaryEntry = useAppStore((s) => s.addDiaryEntry);
   const touchRecent = useAppStore((s) => s.touchRecent);
+  const saveCustomFoods = useAppStore((s) => s.saveCustomFoods);
+  const labelInputRef = useRef<HTMLInputElement>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
@@ -49,6 +51,8 @@ export function ScanFoodPage() {
   const [typedText, setTypedText] = useState(initialText);
   const autoRanText = useRef(false);
   const isText = scan?.inputKind === 'text' || (stage === 'analyzing' && !imageDataUrl);
+  const [labelMode, setLabelMode] = useState(false);
+  const isLabel = scan?.inputKind === 'label' || (stage === 'analyzing' && labelMode);
 
   // Arriving with ?text= (from food search or the AI chat) looks it up right away.
   useEffect(() => {
@@ -58,15 +62,27 @@ export function ScanFoodPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function handleFile(file: File | undefined) {
+  function handleFile(file: File | undefined, asLabel = false) {
     if (!file) return;
     const reader = new FileReader();
     reader.onload = () => {
       const dataUrl = reader.result as string;
       setImageDataUrl(dataUrl);
-      runRecognition(dataUrl);
+      if (asLabel) runLabel(dataUrl);
+      else runRecognition(dataUrl);
     };
     reader.readAsDataURL(file);
+  }
+
+  async function runLabel(dataUrl: string) {
+    setLabelMode(true);
+    setStage('analyzing');
+    try {
+      applyResult(await foodRecognitionService.recognizeLabel(dataUrl));
+    } catch {
+      setScan(null);
+      setStage('error');
+    }
   }
 
   async function runTextLookup(text: string) {
@@ -92,6 +108,7 @@ export function ScanFoodPage() {
   }
 
   async function runRecognition(dataUrl: string) {
+    setLabelMode(false);
     setStage('analyzing');
     try {
       const result = await foodRecognitionService.recognize(dataUrl);
@@ -179,6 +196,7 @@ export function ScanFoodPage() {
   }
 
   function retake() {
+    setLabelMode(false);
     setStage('capture');
     setImageDataUrl(null);
     setScan(null);
@@ -187,9 +205,13 @@ export function ScanFoodPage() {
   }
 
   function confirmAdd() {
+    // Foods that aren't in the built-in database get saved to "My foods" so they can be searched and re-logged.
+    const newFoods = candidates.filter((c) => !c.matchedLocalFood && c.customFood).map((c) => c.customFood!);
+    if (newFoods.length > 0) saveCustomFoods(newFoods);
     for (const c of candidates) {
-      const quantityLabel =
-        c.unitCount && c.unitLabel
+      const quantityLabel = isLabel
+        ? `${c.estimatedGrams}g`
+        : c.unitCount && c.unitLabel
           ? `~${c.unitCount} ${c.unitLabel} (estimated)`
           : `~${c.estimatedGrams}g (estimated)`;
       addDiaryEntry({
@@ -201,10 +223,10 @@ export function ScanFoodPage() {
         quantityGrams: c.estimatedGrams,
         servingLabel: `${quantityLabel}${c.addedDetails && c.addedDetails.length > 0 ? ' + added details' : ''}`,
         nutrition: c.nutrition,
-        dataQuality: 'ai_estimate',
+        dataQuality: isLabel ? 'estimated' : c.matchedLocalFood ? (findFoodById(c.foodId)?.dataQuality ?? 'ai_estimate') : 'ai_estimate',
         source: 'scan',
-        aiConfidence: c.confidence,
-        naturalness: findFoodById(c.foodId)?.naturalness,
+        aiConfidence: isLabel ? undefined : c.confidence,
+        naturalness: findFoodById(c.foodId)?.naturalness ?? c.customFood?.naturalness,
       });
       touchRecent({ refId: c.foodId, refType: 'food' });
     }
@@ -288,6 +310,34 @@ export function ScanFoodPage() {
         </div>
       )}
 
+      {stage === 'capture' && (
+        <button
+          onClick={() => labelInputRef.current?.click()}
+          className="flex w-full items-center gap-3 rounded-xl2 bg-surface p-5 text-left shadow-card transition hover:bg-surface-alt"
+        >
+          <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-primary-50 text-primary-600">
+            <Tag size={20} />
+          </span>
+          <span className="min-w-0">
+            <span className="block font-semibold text-fg">Scan a nutrition label</span>
+            <span className="block text-xs text-muted">
+              Packaged food? Photograph the nutrition table (ערכים תזונתיים) for exact values instead of an estimate.
+            </span>
+          </span>
+          <input
+            ref={labelInputRef}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            className="hidden"
+            onChange={(e) => {
+              handleFile(e.target.files?.[0], true);
+              e.target.value = '';
+            }}
+          />
+        </button>
+      )}
+
       {stage === 'analyzing' && imageDataUrl && (
         <div className="overflow-hidden rounded-xl2 bg-surface shadow-card">
           <div className="relative aspect-square w-full overflow-hidden bg-surface-alt2">
@@ -309,9 +359,23 @@ export function ScanFoodPage() {
       {stage === 'error' && (
         <div className="space-y-3">
           <ErrorState
-            title={scan?.unavailableReason ? (isText ? "Couldn't look that up" : "Couldn't analyze this photo") : "AI couldn't recognize any food"}
+            title={
+              scan?.unavailableReason
+                ? isLabel
+                  ? "Couldn't read this label"
+                  : isText
+                    ? "Couldn't look that up"
+                    : "Couldn't analyze this photo"
+                : "AI couldn't recognize any food"
+            }
             description={scan?.unavailableReason ?? 'Try a clearer, well-lit photo, or search for the food manually instead.'}
-            onRetry={imageDataUrl ? () => runRecognition(imageDataUrl) : typedText.trim() ? () => runTextLookup(typedText) : retake}
+            onRetry={
+              imageDataUrl
+                ? () => (isLabel ? runLabel(imageDataUrl) : runRecognition(imageDataUrl))
+                : typedText.trim()
+                  ? () => runTextLookup(typedText)
+                  : retake
+            }
           />
           {scan?.unavailableDetail && (
             <p className="break-words px-2 text-center text-[11px] text-faint">Details: {scan.unavailableDetail} · v{__BUILD_ID__.split(' ')[0]}</p>
@@ -322,7 +386,7 @@ export function ScanFoodPage() {
             </Button>
           )}
           <Button fullWidth variant="secondary" icon={<RotateCcw size={16} />} onClick={retake}>
-            {isText ? 'Edit what I typed' : 'Take a different photo'}
+            {isText ? 'Edit what I typed' : isLabel ? 'Try another label photo' : 'Take a different photo'}
           </Button>
           <Button fullWidth variant="secondary" icon={<Search size={16} />} onClick={() => navigate(`/add/search?${queryString}`)}>
             Search for food manually
@@ -361,13 +425,21 @@ export function ScanFoodPage() {
 
           <div className="rounded-xl bg-orange-50 px-4 py-3 text-sm text-orange-800">
             <div className="flex items-center justify-between">
-              <span>{isText ? '✍️ Check the amounts and values before adding.' : '⚠️ AI estimate — review and adjust before adding.'}</span>
+              <span>
+                {isLabel
+                  ? '🏷️ Check the numbers match the package, then set how much you ate.'
+                  : isText
+                    ? '✍️ Check the amounts and values before adding.'
+                    : '⚠️ AI estimate — review and adjust before adding.'}
+              </span>
               <button onClick={retake} className="flex items-center gap-1 font-semibold underline underline-offset-2">
                 <RotateCcw size={13} /> {isText ? 'Edit' : 'Retake'}
               </button>
             </div>
             <p className="mt-1 text-xs text-orange-700">
-              {isText
+              {isLabel
+                ? 'Values come from the label you photographed. The product is saved to My foods, so next time just search for it.'
+                : isText
                 ? 'Values are per-100g reference data scaled to the grams you typed. Add oil, butter or sauces with "Add details" if they were mixed in.'
                 : 'The AI can’t reliably see things like oil, butter, sauces or dressings in a photo — use "Add details" below for anything mixed in that isn’t visible.'}
             </p>
@@ -386,7 +458,7 @@ export function ScanFoodPage() {
           </div>
 
           <div>
-            <h2 className="mb-2 text-base font-bold text-fg">{isText ? "What we understood" : "What we detected"}</h2>
+            <h2 className="mb-2 text-base font-bold text-fg">{isLabel ? 'What we read' : isText ? 'What we understood' : 'What we detected'}</h2>
             <div className="space-y-3">
               {candidates.map((c) => {
                 const identificationCertain = c.identificationConfidence >= IDENTIFICATION_CONFIDENCE_THRESHOLD;
@@ -400,7 +472,8 @@ export function ScanFoodPage() {
                         <div>
                           <p className="font-semibold text-fg">{c.name}</p>
                           <p className="text-xs text-muted">
-                            {c.addedDetails && c.addedDetails.length > 0 ? 'Updated estimate' : 'Estimated'}: ~{Math.round(c.nutrition.calories)} kcal
+                            {isLabel ? '' : c.addedDetails && c.addedDetails.length > 0 ? 'Updated estimate: ~' : 'Estimated: ~'}
+                            {Math.round(c.nutrition.calories)} kcal
                           </p>
                         </div>
                       </div>
@@ -415,7 +488,7 @@ export function ScanFoodPage() {
                     </div>
 
                     <div className="mt-3 rounded-lg bg-surface-alt px-3 py-2">
-                      <p className="text-[11px] font-semibold uppercase tracking-wide text-muted">{isText ? '✍️ What you wrote' : '👁️ What we saw'}</p>
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-muted">{isLabel ? '🏷️ From the label' : isText ? '✍️ What you wrote' : '👁️ What we saw'}</p>
                       <p className="mt-0.5 text-xs text-fg/80">{c.seenDescription}</p>
                       {c.visibleExtras && c.visibleExtras.length > 0 && (
                         <div className="mt-1.5 flex flex-wrap gap-1">
@@ -475,7 +548,7 @@ export function ScanFoodPage() {
 
                     <div className="mt-3">
                       <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted">
-                        {isText ? '📏 Amount' : '📏 Our estimate'}{c.estimatedGramsRange ? ` (~${c.estimatedGramsRange[0]}–${c.estimatedGramsRange[1]}g)` : ''}
+                        {isText || isLabel ? '📏 How much you ate' : '📏 Our estimate'}{c.estimatedGramsRange ? ` (~${c.estimatedGramsRange[0]}–${c.estimatedGramsRange[1]}g)` : ''}
                         {c.unitCount && c.unitLabel ? ` · ~${c.unitCount} ${c.unitLabel}` : ''}
                       </p>
                       <div className="flex items-center justify-center rounded-xl bg-surface-alt py-3">
@@ -497,12 +570,12 @@ export function ScanFoodPage() {
 
                     <p className="mt-2 text-center text-[10px] text-faint">
                       Per-100g data: {c.nutritionSource}
-                      {!c.matchedLocalFood && ' (not yet in our verified database — treat as approximate)'}
+                      {!c.matchedLocalFood && !isLabel && ' (not yet in our verified database — treat as approximate)'}
                     </p>
 
-                    {findFoodById(c.foodId)?.naturalness && (
+                    {(findFoodById(c.foodId)?.naturalness ?? c.customFood?.naturalness) && (
                       <div className="mt-2 flex justify-center">
-                        <NaturalnessBadge score={findFoodById(c.foodId)!.naturalness.score} />
+                        <NaturalnessBadge score={(findFoodById(c.foodId)?.naturalness ?? c.customFood!.naturalness).score} />
                       </div>
                     )}
 
@@ -531,7 +604,7 @@ export function ScanFoodPage() {
             <>
               {totals && (
                 <div className="rounded-xl2 bg-surface p-4 shadow-card">
-                  <p className="text-sm font-semibold text-fg">Estimated total</p>
+                  <p className="text-sm font-semibold text-fg">{isLabel ? 'Total' : 'Estimated total'}</p>
                   <div className="mt-2 grid grid-cols-4 gap-2 text-center">
                     <div>
                       <p className="text-lg font-bold tabular-nums text-fg">{Math.round(totals.calories)}</p>

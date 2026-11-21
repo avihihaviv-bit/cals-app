@@ -5,6 +5,7 @@ import { todayISO } from '@/utils/date';
 import type {
   DiaryEntry,
   FavoriteItem,
+  FoodItem,
   FoodRef,
   MealPlanDay,
   MeasurementEntry,
@@ -26,6 +27,7 @@ export interface BackupData {
   measurements?: MeasurementEntry[];
   progressPhotos?: ProgressPhoto[];
   waterLog?: Record<string, number>;
+  customFoods?: FoodItem[];
 }
 
 interface AppState {
@@ -43,6 +45,11 @@ interface AppState {
   measurements: MeasurementEntry[];
   progressPhotos: ProgressPhoto[];
   savedMealPlans: SavedMealPlan[];
+  /** Foods the user logged that aren't in the built-in database (AI lookups, nutrition labels) — searchable and re-loggable like any other food. */
+  customFoods: FoodItem[];
+
+  saveCustomFoods: (foods: FoodItem[]) => void;
+  deleteCustomFood: (id: string) => void;
 
   setProfile: (profile: UserProfile) => void;
   updateProfile: (partial: Partial<UserProfile>) => void;
@@ -106,6 +113,16 @@ export const useAppStore = create<AppState>()(
       measurements: [],
       progressPhotos: [],
       savedMealPlans: [],
+      customFoods: [],
+
+      saveCustomFoods: (foods) =>
+        set((state) => {
+          const byId = new Map(state.customFoods.map((f) => [f.id, f]));
+          for (const f of foods) byId.set(f.id, f);
+          return { customFoods: [...byId.values()] };
+        }),
+
+      deleteCustomFood: (id) => set((state) => ({ customFoods: state.customFoods.filter((f) => f.id !== id) })),
 
       setProfile: (profile) => set({ profile }),
 
@@ -245,6 +262,7 @@ export const useAppStore = create<AppState>()(
           measurements: [],
           progressPhotos: [],
           savedMealPlans: [],
+          customFoods: [],
         }),
 
       importBackup: (data) =>
@@ -257,6 +275,7 @@ export const useAppStore = create<AppState>()(
           measurements: data.measurements ?? state.measurements,
           progressPhotos: data.progressPhotos ?? state.progressPhotos,
           waterLog: data.waterLog ?? state.waterLog,
+          customFoods: data.customFoods ?? state.customFoods,
         })),
     }),
     {

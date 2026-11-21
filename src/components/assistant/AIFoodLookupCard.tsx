@@ -23,6 +23,7 @@ export function AIFoodLookupCard({ description, onNavigate }: { description: str
   const navigate = useNavigate();
   const addDiaryEntry = useAppStore((s) => s.addDiaryEntry);
   const touchRecent = useAppStore((s) => s.touchRecent);
+  const saveCustomFoods = useAppStore((s) => s.saveCustomFoods);
   const [result, setResult] = useState<ScanResult | null>(null);
   const [items, setItems] = useState<ScannedFoodCandidate[]>([]);
   const [mealType, setMealType] = useState<MealType>(suggestMealType());
@@ -50,6 +51,8 @@ export function AIFoodLookupCard({ description, onNavigate }: { description: str
 
   function addAll() {
     const date = todayISO();
+    const newFoods = items.filter((c) => !c.matchedLocalFood && c.customFood).map((c) => c.customFood!);
+    if (newFoods.length > 0) saveCustomFoods(newFoods);
     for (const c of items) {
       addDiaryEntry({
         date,
@@ -63,7 +66,7 @@ export function AIFoodLookupCard({ description, onNavigate }: { description: str
         dataQuality: c.matchedLocalFood ? (findFoodById(c.foodId)?.dataQuality ?? 'ai_estimate') : 'ai_estimate',
         source: 'ai_coach',
         aiConfidence: c.confidence,
-        naturalness: findFoodById(c.foodId)?.naturalness,
+        naturalness: findFoodById(c.foodId)?.naturalness ?? c.customFood?.naturalness,
       });
       touchRecent({ refId: c.foodId, refType: 'food' });
     }
