@@ -6,6 +6,8 @@ import type {
   DiaryEntry,
   FavoriteItem,
   FoodItem,
+  Restaurant,
+  RestaurantDish,
   FoodRef,
   MealPlanDay,
   MeasurementEntry,
@@ -28,6 +30,13 @@ export interface BackupData {
   progressPhotos?: ProgressPhoto[];
   waterLog?: Record<string, number>;
   customFoods?: FoodItem[];
+  researchedRestaurants?: ResearchedRestaurant[];
+}
+
+/** A restaurant + menu found by the AI researcher, saved so it never has to be researched again. */
+export interface ResearchedRestaurant {
+  restaurant: Restaurant;
+  dishes: RestaurantDish[];
 }
 
 interface AppState {
@@ -47,6 +56,11 @@ interface AppState {
   savedMealPlans: SavedMealPlan[];
   /** Foods the user logged that aren't in the built-in database (AI lookups, nutrition labels) — searchable and re-loggable like any other food. */
   customFoods: FoodItem[];
+
+  researchedRestaurants: ResearchedRestaurant[];
+  /** Saves (or merges into) a researched restaurant: dishes with the same id are replaced, new ones added. */
+  saveResearchedRestaurant: (entry: ResearchedRestaurant) => void;
+  deleteResearchedRestaurant: (restaurantId: string) => void;
 
   saveCustomFoods: (foods: FoodItem[]) => void;
   deleteCustomFood: (id: string) => void;
@@ -114,6 +128,29 @@ export const useAppStore = create<AppState>()(
       progressPhotos: [],
       savedMealPlans: [],
       customFoods: [],
+      researchedRestaurants: [],
+
+      saveResearchedRestaurant: (entry) =>
+        set((state) => {
+          const existing = state.researchedRestaurants.find((x) => x.restaurant.id === entry.restaurant.id);
+          if (!existing) return { researchedRestaurants: [...state.researchedRestaurants, entry] };
+          const byId = new Map(existing.dishes.map((d) => [d.id, d]));
+          for (const d of entry.dishes) byId.set(d.id, d);
+          const sources = [...(existing.restaurant.sources ?? []), ...(entry.restaurant.sources ?? [])].filter(
+            (s, i, arr) => arr.findIndex((x) => x.url === s.url) === i,
+          );
+          const merged: ResearchedRestaurant = {
+            restaurant: { ...existing.restaurant, ...entry.restaurant, sources, grounded: existing.restaurant.grounded || entry.restaurant.grounded },
+            dishes: [...byId.values()],
+          };
+          merged.restaurant.dishIds = merged.dishes.map((d) => d.id);
+          return {
+            researchedRestaurants: state.researchedRestaurants.map((x) => (x.restaurant.id === entry.restaurant.id ? merged : x)),
+          };
+        }),
+
+      deleteResearchedRestaurant: (restaurantId) =>
+        set((state) => ({ researchedRestaurants: state.researchedRestaurants.filter((x) => x.restaurant.id !== restaurantId) })),
 
       saveCustomFoods: (foods) =>
         set((state) => {
@@ -263,6 +300,7 @@ export const useAppStore = create<AppState>()(
           progressPhotos: [],
           savedMealPlans: [],
           customFoods: [],
+          researchedRestaurants: [],
         }),
 
       importBackup: (data) =>
@@ -276,6 +314,7 @@ export const useAppStore = create<AppState>()(
           progressPhotos: data.progressPhotos ?? state.progressPhotos,
           waterLog: data.waterLog ?? state.waterLog,
           customFoods: data.customFoods ?? state.customFoods,
+          researchedRestaurants: data.researchedRestaurants ?? state.researchedRestaurants,
         })),
     }),
     {

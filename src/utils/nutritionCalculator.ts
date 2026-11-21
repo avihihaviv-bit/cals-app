@@ -320,6 +320,7 @@ export function calculateNutrition(per100g: NutritionFacts, quantityGrams: numbe
     fiberG: round(per100g.fiberG),
     sugarG: round(per100g.sugarG),
     sodiumMg: per100g.sodiumMg === undefined ? undefined : Math.round(per100g.sodiumMg * factor),
+    ...(per100g.saturatedFatG === undefined ? {} : { saturatedFatG: round(per100g.saturatedFatG) }),
   };
 }
 

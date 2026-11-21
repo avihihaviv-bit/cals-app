@@ -15,6 +15,7 @@ export async function exportBackup(): Promise<SaveFileResult> {
     progressPhotos: state.progressPhotos,
     waterLog: state.waterLog,
     customFoods: state.customFoods,
+    researchedRestaurants: state.researchedRestaurants,
   };
   return saveTextFile(`nutrition-ai-export-${todayISO()}.json`, JSON.stringify(exportData, null, 2));
 }

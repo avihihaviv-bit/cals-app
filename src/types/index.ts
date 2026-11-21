@@ -74,6 +74,7 @@ export interface NutritionFacts {
   fiberG?: number;
   sugarG?: number;
   sodiumMg?: number;
+  saturatedFatG?: number;
 }
 
 /** Units a food serving can be expressed in. */
@@ -127,6 +128,22 @@ export interface RestaurantDish {
   dataQuality: DataQuality;
   nutritionReliable: boolean;
   naturalness: NaturalnessInfo;
+  nameHe?: string;
+  aliases?: string[];
+  /** Menu section, in Hebrew (המבורגרים, שתייה…). */
+  menuCategory?: string;
+  /** Hebrew description / ingredients. */
+  description?: string;
+  reliability?: DishReliability;
+  /** Hebrew explanation of where the numbers come from. */
+  basis?: string;
+  sourceUrl?: string;
+  /** Nutrition for one serving as listed (incl. saturated fat when known). */
+  perServing?: NutritionFacts;
+  /** Whether the serving weight is a known figure or an estimate used only for scaling. */
+  weightKnown?: boolean;
+  /** Hebrew serving description, e.g. "מנה רגילה". */
+  servingDescription?: string;
 }
 
 export interface Restaurant {
@@ -139,7 +156,26 @@ export interface Restaurant {
   rating?: number;
   priceLevel?: 1 | 2 | 3;
   dishIds: string[];
+  /** Hebrew display name. */
+  nameHe?: string;
+  /** Extra search terms (other spellings, Hebrew/English variants). */
+  aliases?: string[];
+  /** Hebrew category label, e.g. "המבורגרים". */
+  categoryHe?: string;
+  website?: string;
+  /** Hebrew note about branches/locations. */
+  branchesNote?: string;
+  /** Tailwind gradient classes for the restaurant tile. */
+  brandColor?: string;
+  origin?: 'builtin' | 'ai' | 'demo';
+  /** AI research: when it was researched, which web pages it was based on, and whether a live web search actually ran. */
+  researchedAt?: string;
+  sources?: { title: string; url: string }[];
+  grounded?: boolean;
 }
+
+/** How trustworthy a restaurant dish's numbers are. */
+export type DishReliability = 'official' | 'estimated' | 'low';
 
 export type MealType = 'breakfast' | 'lunch' | 'dinner' | 'snacks';
 

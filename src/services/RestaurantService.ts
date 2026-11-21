@@ -1,4 +1,5 @@
-import { RESTAURANTS, RESTAURANT_DISHES, dishesForRestaurant, findDishById, findRestaurantById } from '@/data/restaurants';
+import { RESTAURANT_DISHES, allRestaurants, dishesForRestaurant, findDishById, findRestaurantById } from '@/data/restaurants';
+import { searchRestaurants } from '@/services/restaurantSearch';
 import { calculateNutrition } from '@/utils/nutritionCalculator';
 import { scoreNutritionAgainstRemaining } from '@/services/RecommendationService';
 import type { MacroTargets, Restaurant, RestaurantDish, RestaurantSearchQuery } from '@/types';
@@ -29,16 +30,12 @@ function normalize(text: string): string {
 class MockRestaurantService implements RestaurantServiceInterface {
   async search({ text, city, cuisine }: RestaurantSearchQuery): Promise<Restaurant[]> {
     await delay(NETWORK_DELAY_MS);
-    let results = [...RESTAURANTS];
+    let results = allRestaurants();
 
     if (text && text.trim()) {
-      const q = normalize(text);
-      results = results.filter((r) => {
-        if (normalize(r.name).includes(q)) return true;
-        if (r.cuisine.some((c) => normalize(c).includes(q))) return true;
-        const dishes = dishesForRestaurant(r.id);
-        return dishes.some((d) => normalize(d.name).includes(q));
-      });
+      const hits = searchRestaurants(text);
+      const ids = new Set([...hits.restaurants.map((h) => h.restaurant.id), ...hits.dishes.map((h) => h.dish.restaurantId)]);
+      results = results.filter((r) => ids.has(r.id));
     }
     if (city) {
       results = results.filter((r) => normalize(r.city) === normalize(city));
@@ -69,12 +66,12 @@ export const restaurantService: RestaurantServiceInterface = new MockRestaurantS
 
 export function allCuisines(): string[] {
   const set = new Set<string>();
-  RESTAURANTS.forEach((r) => r.cuisine.forEach((c) => set.add(c)));
+  allRestaurants().forEach((r) => r.cuisine.forEach((c) => set.add(c)));
   return Array.from(set).sort();
 }
 
 export function allCities(): string[] {
-  return Array.from(new Set(RESTAURANTS.map((r) => r.city))).sort();
+  return Array.from(new Set(allRestaurants().map((r) => r.city))).sort();
 }
 
 export interface RestaurantMatch {
@@ -90,7 +87,7 @@ export interface RestaurantMatch {
  * recommendations. Never claims proximity/distance: this app has no real
  * location data, so "close to you" is deliberately never shown.
  */
-export function matchRestaurants(remaining: MacroTargets, restaurants: Restaurant[] = RESTAURANTS, limit = 3): RestaurantMatch[] {
+export function matchRestaurants(remaining: MacroTargets, restaurants: Restaurant[] = allRestaurants(), limit = 3): RestaurantMatch[] {
   const matches: RestaurantMatch[] = restaurants.map((restaurant) => {
     const dishes = dishesForRestaurant(restaurant.id);
     let best: { dish: RestaurantDish; score: number } | null = null;

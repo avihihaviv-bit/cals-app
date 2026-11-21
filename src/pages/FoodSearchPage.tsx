@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, SearchX, Sparkles } from 'lucide-react';
+import { Search, SearchX, Sparkles, Store } from 'lucide-react';
+import { searchRestaurants } from '@/services/restaurantSearch';
 import { foodSearchService } from '@/services/FoodSearchService';
 import { FOODS } from '@/data/foods';
 import { resolveFoodRef, type ResolvedFood } from '@/utils/resolveFoodRef';
@@ -55,6 +56,8 @@ export function FoodSearchPage() {
   const [error, setError] = useState(false);
   const [activeRef, setActiveRef] = useState<FoodRef | null>(null);
   const [filter, setFilter] = useState<NutrientFilter | null>(null);
+  const [activeDishRef, setActiveDishRef] = useState<FoodRef | null>(null);
+  const restaurantHits = useMemo(() => (debouncedQuery.trim() ? searchRestaurants(debouncedQuery, { restaurants: 3, dishes: 4 }) : null), [debouncedQuery]);
 
   const allFoods = useMemo(
     () => FOODS.map((f) => resolveFoodRef({ refId: f.id, refType: 'food' })).filter((f): f is ResolvedFood => !!f),
@@ -159,6 +162,37 @@ export function FoodSearchPage() {
         </button>
       )}
 
+      {restaurantHits && (restaurantHits.dishes.length > 0 || restaurantHits.restaurants.length > 0) && (
+        <section dir="rtl" className="rounded-xl2 bg-surface p-3 text-right shadow-card">
+          <p className="mb-2 flex items-center gap-1.5 text-xs font-bold text-muted">
+            <Store size={13} /> ממסעדות
+          </p>
+          <div className="space-y-1">
+            {restaurantHits.dishes.map((h) => (
+              <button
+                key={h.dish.id}
+                onClick={() => setActiveDishRef({ refId: h.dish.id, refType: 'dish' })}
+                className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-right hover:bg-surface-alt"
+              >
+                <span className="text-lg">{h.dish.imageEmoji}</span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-medium text-fg">{h.dish.nameHe ?? h.dish.name}</span>
+                  <span className="block truncate text-[11px] text-muted">
+                    {h.restaurant?.nameHe ?? h.restaurant?.name} · {Math.round(h.dish.perServing?.calories ?? 0)} קק״ל
+                  </span>
+                </span>
+              </button>
+            ))}
+          </div>
+          <button
+            onClick={() => navigate(`/add/restaurants?${queryString}&q=${encodeURIComponent(debouncedQuery.trim())}`)}
+            className="mt-1.5 w-full rounded-lg py-1.5 text-xs font-semibold text-primary-700 hover:bg-primary-50"
+          >
+            כל התוצאות במסעדות ←
+          </button>
+        </section>
+      )}
+
       {!error && !loading && (debouncedQuery.trim() || browsing) && displayedResults.length === 0 && (
         <EmptyState
           icon={<SearchX size={22} />}
@@ -182,6 +216,15 @@ export function FoodSearchPage() {
       {!query && !filter && (
         <p className="pt-4 text-center text-xs text-muted">Try &quot;chicken&quot;, &quot;rice&quot;, &quot;banana&quot;, or &quot;פסטה&quot;</p>
       )}
+
+      <FoodDetailModal
+        open={!!activeDishRef}
+        onClose={() => setActiveDishRef(null)}
+        addRef={activeDishRef ?? undefined}
+        addDate={date}
+        addSource="restaurant"
+        onAdded={handleAdded}
+      />
 
       <FoodDetailModal
         open={!!activeRef}

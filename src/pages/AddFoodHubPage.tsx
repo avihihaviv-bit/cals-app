@@ -110,7 +110,7 @@ export function AddFoodHubPage() {
           icon={<Store size={22} />}
           emoji="🍽️"
           title="Restaurants"
-          description="Find dishes from local restaurants"
+          description="Any restaurant or dish — AI researches new ones"
         />
       </div>
 

@@ -430,6 +430,60 @@ async function generateAnalysis(
   );
 }
 
+export interface WebSource {
+  title: string;
+  url: string;
+}
+
+export interface GroundedAnswer {
+  text: string;
+  /** Pages Google Search actually returned for this answer (from grounding metadata — not model-written). */
+  sources: WebSource[];
+  searchQueries: string[];
+  /** True when a live Google Search actually ran. */
+  grounded: boolean;
+}
+
+/**
+ * Asks Gemini with Google Search grounding: the model runs real web searches
+ * and its answer comes with the pages it used. If search grounding isn't
+ * available on any model for this key, falls back to an answer without web
+ * access, flagged grounded: false so callers can mark everything as estimated.
+ */
+export async function askWithWebSearch(apiKey: string, systemPrompt: string, userText: string): Promise<GroundedAnswer> {
+  const request = (withSearch: boolean) => ({
+    system_instruction: { parts: [{ text: systemPrompt }] },
+    contents: [{ role: 'user', parts: [{ text: userText }] }],
+    ...(withSearch ? { tools: [{ google_search: {} }] } : {}),
+    generationConfig: { temperature: 0.2, maxOutputTokens: 16384 },
+  });
+  const parse = (text: string, raw: any): GroundedAnswer | null => {
+    if (!text.trim()) return null;
+    const meta = raw?.candidates?.[0]?.groundingMetadata;
+    const chunks: any[] = meta?.groundingChunks ?? [];
+    const sources = chunks
+      .map((c) => c?.web)
+      .filter((w) => w?.uri)
+      .map((w) => ({ title: String(w.title ?? w.uri), url: String(w.uri) }))
+      .filter((w, i, arr) => arr.findIndex((x) => x.url === w.url) === i);
+    return { text, sources, searchQueries: meta?.webSearchQueries ?? [], grounded: sources.length > 0 };
+  };
+  try {
+    return await runWithModels<GroundedAnswer>(apiKey, request(true), 'Gemini declined this research request.', parse, {
+      accuracyCritical: true,
+      timeoutMs: 150_000,
+    });
+  } catch (err) {
+    if (err instanceof GeminiError && (err.kind === 'invalid_key' || err.kind === 'quota' || err.kind === 'network')) throw err;
+    // Search tool unavailable for this key/model — answer from the model's own knowledge, clearly flagged.
+    const ans = await runWithModels<GroundedAnswer>(apiKey, request(false), 'Gemini declined this research request.', parse, {
+      accuracyCritical: true,
+      timeoutMs: 150_000,
+    });
+    return { ...ans, grounded: false, sources: [] };
+  }
+}
+
 export interface ChatTurn {
   role: 'user' | 'assistant';
   text: string;
@@ -462,8 +516,8 @@ async function runWithModels<T>(
   apiKey: string,
   requestBody: unknown,
   blockedMessage: string,
-  parse: (text: string) => T | null,
-  options: { accuracyCritical?: boolean } = {},
+  parse: (text: string, raw: any) => T | null,
+  options: { accuracyCritical?: boolean; timeoutMs?: number } = {},
 ): Promise<T> {
   let models: string[];
   try {
@@ -488,7 +542,7 @@ async function runWithModels<T>(
       res = await fetchWithTimeout(
         `${API_BASE}/models/${model}:generateContent`,
         { method: 'POST', headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey }, body },
-        /pro/.test(model) ? PRO_TIMEOUT_MS : REQUEST_TIMEOUT_MS,
+        options.timeoutMs ?? (/pro/.test(model) ? PRO_TIMEOUT_MS : REQUEST_TIMEOUT_MS),
       );
     } catch (err) {
       // A timeout on one model shouldn't sink the request — try the next one.
@@ -509,7 +563,7 @@ async function runWithModels<T>(
         failures.push(`${model}: empty response (finishReason ${data?.candidates?.[0]?.finishReason ?? 'unknown'})`);
         continue;
       }
-      const parsed = parse(text);
+      const parsed = parse(text, data);
       if (parsed === null) {
         failures.push(`${model}: response was not in the expected format`);
         continue;
