@@ -1,3 +1,4 @@
+import { AppLogo } from '@/components/brand/AppLogo';
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Info, Plus, TrendingUp } from 'lucide-react';
@@ -31,11 +32,14 @@ export function DashboardPage() {
   return (
     <div className="space-y-7 pb-6">
       <header className="flex items-center justify-between">
-        <div>
-          <p className="text-sm text-muted">
-            {greeting()} 👋 · {todayLabel}
-          </p>
-          <h1 className="text-2xl font-bold text-fg">Today</h1>
+        <div className="flex items-center gap-3">
+          <AppLogo size={44} className="shrink-0 drop-shadow-md lg:hidden" />
+          <div>
+            <p className="text-sm text-muted">
+              {greeting()} 👋 · {todayLabel}
+            </p>
+            <h1 className="text-2xl font-bold text-fg">Today</h1>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           <Link

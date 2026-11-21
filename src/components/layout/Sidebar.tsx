@@ -1,3 +1,4 @@
+import { AppLogo } from '@/components/brand/AppLogo';
 import { NavLink } from 'react-router-dom';
 import { Apple, Bot, BookOpen, Camera, Home, PlusCircle, Ruler, Salad, Settings, Soup, Sparkles, Store, User } from 'lucide-react';
 import { useUIStore } from '@/store/useUIStore';
@@ -23,7 +24,7 @@ export function Sidebar() {
   return (
     <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 flex-col border-r border-subtle bg-surface px-4 py-6 lg:flex">
       <div className="mb-8 flex items-center gap-2 px-2">
-        <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary-500 text-lg">🥗</div>
+        <AppLogo size={36} className="shrink-0 drop-shadow-sm" />
         <span className="text-lg font-bold text-fg">Nutrition AI</span>
       </div>
 

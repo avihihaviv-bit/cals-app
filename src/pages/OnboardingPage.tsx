@@ -1,3 +1,4 @@
+import { AppLogo } from '@/components/brand/AppLogo';
 import { useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ChevronLeft, Info, ShieldAlert, Sparkles, Upload } from 'lucide-react';
@@ -239,7 +240,7 @@ export function OnboardingPage() {
 function WelcomeStep() {
   return (
     <div className="flex flex-col items-center py-10 text-center">
-      <div className="mb-5 flex h-20 w-20 items-center justify-center rounded-3xl bg-primary-500 text-4xl shadow-elevated">🥗</div>
+      <AppLogo size={80} className="mb-5 drop-shadow-lg" />
       <h1 className="text-2xl font-bold text-fg">Welcome to Nutrition AI</h1>
       <p className="mt-3 max-w-sm text-muted">
         Let&apos;s set up your profile so we can estimate how many calories and macros you need each day. It only takes a minute.
