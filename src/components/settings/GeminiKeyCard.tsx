@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { CheckCircle2, ExternalLink, Eye, EyeOff, Loader2, XCircle } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
-import { clearGeminiKey, getGeminiKey, maskGeminiKey, normalizeGeminiKey, setGeminiKey } from '@/utils/geminiKey';
+import { clearGeminiKey, getAiQuality, getGeminiKey, maskGeminiKey, normalizeGeminiKey, setAiQuality, setGeminiKey, type AiQuality } from '@/utils/geminiKey';
+import { Chip } from '@/components/ui/Chip';
 import { GeminiError, listUsableModels } from '@/services/geminiVision';
 
 type TestState =
@@ -15,12 +16,19 @@ export function GeminiKeyCard() {
   const [draft, setDraft] = useState('');
   const [reveal, setReveal] = useState(false);
   const [test, setTest] = useState<TestState>({ status: 'idle' });
+  const [quality, setQuality] = useState<AiQuality>(() => getAiQuality());
+
+  function chooseQuality(q: AiQuality) {
+    setAiQuality(q);
+    setQuality(q);
+  }
 
   async function runTest(key: string) {
     setTest({ status: 'testing' });
     try {
       const models = await listUsableModels(key);
-      setTest({ status: 'ok', model: models[0] });
+      const pro = models.find((m) => /pro/.test(m));
+      setTest({ status: 'ok', model: getAiQuality() === 'best' && pro ? `${pro} (falls back to ${models[0]} when busy)` : models[0] });
     } catch (err) {
       if (err instanceof GeminiError) setTest({ status: 'error', message: err.message, detail: err.detail });
       else setTest({ status: 'error', message: "Couldn't check the key right now.", detail: String(err) });
@@ -59,6 +67,25 @@ export function GeminiKeyCard() {
           {savedKey ? 'Connected' : 'Off'}
         </span>
       </div>
+
+      {savedKey && (
+        <div className="rounded-xl bg-surface-alt p-3.5">
+          <p className="text-sm font-semibold text-fg">Accuracy</p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <Chip selected={quality === 'best'} onClick={() => chooseQuality('best')}>
+              🎯 Most accurate
+            </Chip>
+            <Chip selected={quality === 'fast'} onClick={() => chooseQuality('fast')}>
+              ⚡ Fastest
+            </Chip>
+          </div>
+          <p className="mt-1.5 text-[11px] text-muted">
+            {quality === 'best'
+              ? 'Scans and lookups use Gemini Pro first (smarter, ~10–30 s). If it’s busy or over the free limit, the fast model takes over automatically.'
+              : 'Uses Gemini Flash only — answers in a few seconds, slightly less precise.'}
+          </p>
+        </div>
+      )}
 
       <div className="flex gap-2">
         <div className="relative flex-1">

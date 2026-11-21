@@ -9,8 +9,12 @@
  * avoids that whole class of failure.
  */
 
+import { getAiQuality } from '@/utils/geminiKey';
+
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 const REQUEST_TIMEOUT_MS = 45_000;
+// Pro models think longer before answering — give them more room.
+const PRO_TIMEOUT_MS = 100_000;
 const MAX_MODELS_TO_TRY = 4;
 const FALLBACK_MODELS = ['gemini-flash-latest', 'gemini-flash-lite-latest', 'gemini-pro-latest'];
 
@@ -32,6 +36,8 @@ export interface RawAnalysisItem {
   hebrewName?: string;
   emoji?: string;
   naturalnessScore?: number;
+  databaseId?: string;
+  referenceFood?: string;
   boxXPct?: number;
   boxYPct?: number;
   boxWPct?: number;
@@ -101,6 +107,14 @@ const RESPONSE_SCHEMA = {
           per100gProteinG: { type: 'NUMBER', description: 'Per-100g protein grams.' },
           per100gCarbsG: { type: 'NUMBER', description: 'Per-100g carb grams.' },
           per100gFatG: { type: 'NUMBER', description: 'Per-100g fat grams.' },
+          databaseId: {
+            type: 'STRING',
+            description: 'id from the app food database list when it is the SAME food in the SAME preparation; otherwise omit.',
+          },
+          referenceFood: {
+            type: 'STRING',
+            description: 'The standard reference entry your per-100g values are based on, e.g. "USDA: Chicken breast, meat only, roasted".',
+          },
           hebrewName: { type: 'STRING', description: 'The common Hebrew name of this food, e.g. "חזה עוף".' },
           emoji: { type: 'STRING', description: 'One emoji that best represents this food.' },
           naturalnessScore: {
@@ -136,10 +150,11 @@ const SYSTEM_PROMPT = `You are a food-photo analysis system feeding a nutrition 
 4. Is each region actually food, or something else (utensil, hand, label, background)?
 5. For each food item, what is the most specific correct identification?
 6. How does it appear to be prepared (raw/cooked/fried/grilled), if visible?
-7. What portion size is it, judged against reference objects (plate/bowl diameter, cutlery, hands, packaging, cups)?
+7. What portion size is it? Measure against reference objects: a standard dinner plate is ~26-27 cm across, a side plate ~20 cm, a fork ~19 cm long, a tablespoon bowl ~4 cm, a soda can 12 cm tall, an adult palm ~8-9 cm wide. Estimate the food's footprint and height/thickness, then convert volume to weight with a realistic density (e.g. cooked rice ~0.8 g/ml packed loosely, salad leaves ~0.1 g/ml, meat ~1.05 g/ml).
 8. Which sauces, oils, dressings, cheese or toppings can you actually SEE?
 9. Is it a packaged product identifiable from its label?
-10. Only then, give per-100g nutrition values.
+10. Only then, give per-100g nutrition values for the food AS SERVED (cooked weight for cooked foods; fried foods include absorbed oil).
+11. Check yourself: per-100g calories should roughly equal 4×protein + 4×carbs + 9×fat. If not, fix the numbers.
 
 Hard rules:
 - Never state an assumption as observed fact. seenDescription contains only what is visually verifiable.
@@ -149,9 +164,17 @@ Hard rules:
 - Only set "unusable" if the photo truly cannot support even a rough estimate.
 - boxXPct/boxYPct/boxWPct/boxHPct are optional — omit them if unsure of the region.
 - Write bestGuessName and alternatives in English; also give hebrewName, one emoji and naturalnessScore per item.
+- Base per-100g values on a real reference entry (USDA FoodData Central, or the Israeli Ministry of Health food database for local dishes) and name it in referenceFood.
+- Items that are mixed dishes (a sandwich, pasta with sauce, a salad with dressing) can be split into components when the parts are clearly visible; otherwise treat the dish as one item with values for the whole dish.
 Respond with ONLY the JSON object matching the schema.`;
 
 let cachedModels: { key: string; models: string[] } | null = null;
+let lastModelUsed: string | null = null;
+
+/** The model that produced the most recent successful answer (shown for transparency). */
+export function getLastModelUsed(): string | null {
+  return lastModelUsed;
+}
 
 interface ListedModel {
   name: string;
@@ -180,14 +203,14 @@ function compareRanks(a: string, b: string): number {
   return 0;
 }
 
-async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = REQUEST_TIMEOUT_MS): Promise<Response> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetch(url, { ...init, signal: controller.signal });
   } catch (err) {
     if ((err as Error).name === 'AbortError') {
-      throw new GeminiError('network', 'Gemini took too long to answer — try again.', `Timed out after ${REQUEST_TIMEOUT_MS / 1000}s`);
+      throw new GeminiError('network', 'Gemini took too long to answer — try again.', `Timed out after ${timeoutMs / 1000}s`);
     }
     throw new GeminiError('network', "Couldn't reach Gemini — check your internet connection.", String(err));
   } finally {
@@ -262,7 +285,9 @@ Rules:
 - If NO amount is given, estimate one typical portion and set a sensible min/max range around it (this is an estimate, not a fact).
 - seenDescription must quote what the user wrote for that item (e.g. 'You wrote: "150g chicken breast"') — do not invent preparation details.
 - identificationConfidence is how sure you are that bestGuessName matches what they meant; if below 70 list alternatives.
-- Give per-100g calories/protein/carbs/fat for the food as typically prepared/eaten (cooked weight if they said cooked). Use well-known reference values (USDA-style).
+- Give per-100g calories/protein/carbs/fat for the food as typically prepared/eaten (cooked weight unless they said raw/dry). Base them on a real reference entry (USDA FoodData Central, or the Israeli Ministry of Health database for local foods) and name it in referenceFood. Check that calories ≈ 4×protein + 4×carbs + 9×fat.
+- Israeli products and dishes are common (e.g. קוטג׳ 5%, במבה, שניצל, בורקס, לחמניה, פיתה, סלט ישראלי, שקשוקה): use typical Israeli recipes and package sizes.
+- For pasta/rice/grains: if the user doesn't say raw/dry, assume the stated grams are cooked.
 - Also give hebrewName (common Hebrew name), one emoji, and naturalnessScore.
 - Do not include bounding boxes.
 - If the text is not about food at all, set isFood false.
@@ -346,22 +371,35 @@ export function analyzeNutritionLabel(apiKey: string, mediaType: string, base64D
         return null;
       }
     },
+    { accuracyCritical: true },
   );
 }
 
+/** Appends the app's verified food list so the model can point at a real entry instead of estimating. */
+function withDatabase(prompt: string, database: string): string {
+  return database
+    ? `${prompt}\n\nApp food database (id: name). When an item is exactly one of these foods in the same preparation, set databaseId to its id — its verified values will be used:\n${database}`
+    : prompt;
+}
+
 /** Analyzes a food photo. */
-export function analyzeFoodPhoto(apiKey: string, mediaType: string, base64Data: string): Promise<RawAnalysisResponse> {
+export function analyzeFoodPhoto(apiKey: string, mediaType: string, base64Data: string, database = ''): Promise<RawAnalysisResponse> {
   return generateAnalysis(
     apiKey,
-    SYSTEM_PROMPT,
+    withDatabase(SYSTEM_PROMPT, database),
     [{ inline_data: { mime_type: mediaType, data: base64Data } }, { text: 'Analyze this food photo following your protocol.' }],
     'Gemini declined to analyze this photo — try a different shot.',
   );
 }
 
 /** Looks up foods the user typed (e.g. "150g chicken breast and 200g rice") — any food, with the exact amounts they gave. */
-export function analyzeFoodText(apiKey: string, description: string): Promise<RawAnalysisResponse> {
-  return generateAnalysis(apiKey, TEXT_SYSTEM_PROMPT, [{ text: `What I ate: ${description}` }], 'Gemini declined to analyze that text — try rephrasing.');
+export function analyzeFoodText(apiKey: string, description: string, database = ''): Promise<RawAnalysisResponse> {
+  return generateAnalysis(
+    apiKey,
+    withDatabase(TEXT_SYSTEM_PROMPT, database),
+    [{ text: `What I ate: ${description}` }],
+    'Gemini declined to analyze that text — try rephrasing.',
+  );
 }
 
 /**
@@ -388,6 +426,7 @@ async function generateAnalysis(
         return null;
       }
     },
+    { accuracyCritical: true },
   );
 }
 
@@ -424,6 +463,7 @@ async function runWithModels<T>(
   requestBody: unknown,
   blockedMessage: string,
   parse: (text: string) => T | null,
+  options: { accuracyCritical?: boolean } = {},
 ): Promise<T> {
   let models: string[];
   try {
@@ -432,17 +472,32 @@ async function runWithModels<T>(
     if (err instanceof GeminiError && err.kind === 'invalid_key') throw err;
     models = FALLBACK_MODELS;
   }
+  // Nutrition lookups in "best accuracy" mode try the strongest (Pro) model
+  // first; if it's busy or over its free quota, the loop below falls back to Flash.
+  if (options.accuracyCritical && getAiQuality() === 'best') {
+    models = [...models.filter((m) => /pro/.test(m)), ...models.filter((m) => !/pro/.test(m))];
+  }
 
   const body = JSON.stringify(requestBody);
   const failures: string[] = [];
   let sawQuota = false;
 
   for (const model of models) {
-    const res = await fetchWithTimeout(`${API_BASE}/models/${model}:generateContent`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey },
-      body,
-    });
+    let res: Response;
+    try {
+      res = await fetchWithTimeout(
+        `${API_BASE}/models/${model}:generateContent`,
+        { method: 'POST', headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey }, body },
+        /pro/.test(model) ? PRO_TIMEOUT_MS : REQUEST_TIMEOUT_MS,
+      );
+    } catch (err) {
+      // A timeout on one model shouldn't sink the request — try the next one.
+      if (err instanceof GeminiError && err.kind === 'network' && /Timed out/.test(err.detail ?? '')) {
+        failures.push(`${model}: ${err.detail}`);
+        continue;
+      }
+      throw err;
+    }
 
     if (res.ok) {
       const data = await res.json();
@@ -459,6 +514,7 @@ async function runWithModels<T>(
         failures.push(`${model}: response was not in the expected format`);
         continue;
       }
+      lastModelUsed = model;
       return parsed;
     }
 

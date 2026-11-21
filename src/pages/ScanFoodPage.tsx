@@ -1,6 +1,6 @@
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useEffect, useRef, useState } from 'react';
-import { Camera, ImagePlus, KeyRound, Loader2, NotebookPen, PencilLine, RotateCcw, ScanLine, Search, Tag, X } from 'lucide-react';
+import { Camera, Check, ImagePlus, KeyRound, Loader2, NotebookPen, PencilLine, RotateCcw, ScanLine, Search, SlidersHorizontal, Tag, X } from 'lucide-react';
 import { getGeminiKey } from '@/utils/geminiKey';
 import { foodRecognitionService, IDENTIFICATION_CONFIDENCE_THRESHOLD } from '@/services/FoodRecognitionService';
 import { foodSearchService } from '@/services/FoodSearchService';
@@ -17,7 +17,7 @@ import { AddDetailsPanel } from '@/components/food/AddDetailsPanel';
 import { ScanCoachOpinion } from '@/components/food/ScanCoachOpinion';
 import { calculateNutrition, sumNutrition } from '@/utils/nutritionCalculator';
 import { findFoodById } from '@/data/foods';
-import type { FoodAlternative, FoodItem, HiddenIngredientEntry, MealType, ScanResult, ScannedFoodCandidate } from '@/types';
+import type { FoodAlternative, FoodItem, HiddenIngredientEntry, MealType, NutritionFacts, ScanResult, ScannedFoodCandidate } from '@/types';
 
 type ScanStage = 'capture' | 'analyzing' | 'review' | 'error';
 
@@ -44,6 +44,7 @@ export function ScanFoodPage() {
   const [candidates, setCandidates] = useState<ScannedFoodCandidate[]>([]);
   const [mealType, setMealType] = useState<MealType>(mealFromUrl ?? suggestMealType());
   const [detailsOpenFor, setDetailsOpenFor] = useState<string | null>(null);
+  const [editValuesFor, setEditValuesFor] = useState<string | null>(null);
   const [swapSearchFor, setSwapSearchFor] = useState<string | null>(null);
   const [hasGeminiKey] = useState(() => !!getGeminiKey());
   const [searchParams] = useSearchParams();
@@ -148,6 +149,23 @@ export function ScanFoodPage() {
         c.id === id ? recomputeCandidate(c, c.estimatedGrams, (c.addedDetails ?? []).filter((d) => d.id !== entryId)) : c,
       ),
     );
+  }
+
+  /** The user corrected the per-100g values (e.g. from the package): use theirs, and save them as their own food. */
+  function updateCandidatePer100g(id: string, per100g: NutritionFacts) {
+    setCandidates((prev) =>
+      prev.map((c) => {
+        if (c.id !== id) return c;
+        const base = c.customFood ?? findFoodById(c.foodId);
+        const foodId = c.matchedLocalFood ? `my-${c.foodId}` : c.foodId;
+        const customFood: FoodItem | undefined = base
+          ? { ...base, id: foodId, per100g, category: 'My foods', dataQuality: 'estimated', source: 'Values you entered' }
+          : undefined;
+        const updated = recomputeCandidate({ ...c, per100gUsed: per100g }, c.estimatedGrams, c.addedDetails ?? []);
+        return { ...updated, foodId, customFood, matchedLocalFood: false, nutritionSource: 'Values you entered' };
+      }),
+    );
+    setEditValuesFor(null);
   }
 
   function removeCandidate(id: string) {
@@ -568,9 +586,24 @@ export function ScanFoodPage() {
                       </span>
                     </div>
 
+                    {editValuesFor === c.id ? (
+                      <Per100gEditor
+                        initial={c.per100gUsed}
+                        onSave={(v) => updateCandidatePer100g(c.id, v)}
+                        onCancel={() => setEditValuesFor(null)}
+                      />
+                    ) : (
+                      <button
+                        onClick={() => setEditValuesFor(c.id)}
+                        className="mx-auto mt-2 flex items-center gap-1 text-[11px] font-semibold text-primary-700 hover:underline"
+                      >
+                        <SlidersHorizontal size={11} /> Fix values (per 100g)
+                      </button>
+                    )}
+
                     <p className="mt-2 text-center text-[10px] text-faint">
                       Per-100g data: {c.nutritionSource}
-                      {!c.matchedLocalFood && !isLabel && ' (not yet in our verified database — treat as approximate)'}
+                      {!c.matchedLocalFood && !isLabel && c.nutritionSource !== 'Values you entered' && ' — approximate'}
                     </p>
 
                     {(findFoodById(c.foodId)?.naturalness ?? c.customFood?.naturalness) && (
@@ -625,6 +658,7 @@ export function ScanFoodPage() {
                   </div>
                 </div>
               )}
+              {scan.modelUsed && <p className="text-center text-[10px] text-faint">Analyzed by {scan.modelUsed}</p>}
               <ScanCoachOpinion candidates={candidates} />
               <Button fullWidth size="lg" onClick={confirmAdd}>
                 Add {candidates.length} item{candidates.length > 1 ? 's' : ''} to {MEAL_LABELS[mealType].label}
@@ -685,6 +719,62 @@ function InlineFoodSwapSearch({ onSelect, onCancel }: { onSelect: (food: FoodIte
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+function Per100gEditor({
+  initial,
+  onSave,
+  onCancel,
+}: {
+  initial: NutritionFacts;
+  onSave: (v: NutritionFacts) => void;
+  onCancel: () => void;
+}) {
+  const [vals, setVals] = useState({
+    calories: String(Math.round(initial.calories)),
+    proteinG: String(initial.proteinG),
+    carbsG: String(initial.carbsG),
+    fatG: String(initial.fatG),
+  });
+  const num = (v: string) => {
+    const n = Number(v.replace(',', '.'));
+    return Number.isFinite(n) && n >= 0 ? n : NaN;
+  };
+  const parsed = { calories: num(vals.calories), proteinG: num(vals.proteinG), carbsG: num(vals.carbsG), fatG: num(vals.fatG) };
+  const valid = Object.values(parsed).every((n) => !Number.isNaN(n));
+  const fields: { key: keyof typeof vals; label: string }[] = [
+    { key: 'calories', label: 'kcal' },
+    { key: 'proteinG', label: 'Protein g' },
+    { key: 'carbsG', label: 'Carbs g' },
+    { key: 'fatG', label: 'Fat g' },
+  ];
+  return (
+    <div className="mt-3 rounded-xl border border-default bg-surface-alt p-3">
+      <p className="text-[11px] font-semibold text-muted">Per 100g — copy from the package if you have it</p>
+      <div className="mt-2 grid grid-cols-4 gap-2">
+        {fields.map((f) => (
+          <label key={f.key} className="text-center">
+            <input
+              inputMode="decimal"
+              value={vals[f.key]}
+              onChange={(e) => setVals((v) => ({ ...v, [f.key]: e.target.value }))}
+              aria-label={f.label}
+              className="w-full rounded-lg border border-default bg-surface px-1.5 py-1.5 text-center text-sm tabular-nums text-fg outline-none focus:border-primary-400"
+            />
+            <span className="mt-0.5 block text-[10px] text-muted">{f.label}</span>
+          </label>
+        ))}
+      </div>
+      <div className="mt-2.5 flex justify-end gap-2">
+        <Button size="sm" variant="ghost" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button size="sm" icon={<Check size={14} />} disabled={!valid} onClick={() => onSave({ ...initial, ...parsed })}>
+          Use these values
+        </Button>
+      </div>
     </div>
   );
 }

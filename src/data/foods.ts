@@ -11,6 +11,35 @@ const gramOption = (g: number): ServingOption => serving(`${g}g`, 'g', g);
 
 const nat = (score: number, reasons: string[]): NaturalnessInfo => ({ score, reasons });
 
+/** Compact builder for the extended set: [kcal, protein, carbs, fat, fiber, sugar, sodium mg] per 100 g (or ml). */
+function f(
+  id: string,
+  name: string,
+  nameHe: string,
+  category: string,
+  imageEmoji: string,
+  [calories, proteinG, carbsG, fatG, fiberG, sugarG, sodiumMg]: number[],
+  [portionLabel, portionUnit, portionGrams]: [string, ServingOption['unit'], number],
+  natScore: number,
+  natReasons: string[],
+  baseUnit: 'g' | 'ml' = 'g',
+): FoodItem {
+  const portion = serving(portionLabel, portionUnit, portionGrams);
+  return {
+    id,
+    name,
+    nameHe,
+    category,
+    imageEmoji,
+    per100g: { calories, proteinG, carbsG, fatG, fiberG, sugarG, sodiumMg },
+    servingOptions: [baseUnit === 'ml' ? serving('100ml', 'ml', 100) : gramOption(100), portion],
+    defaultServing: portion,
+    dataQuality: 'verified',
+    source: 'USDA FoodData Central',
+    naturalness: nat(natScore, natReasons),
+  };
+}
+
 /**
  * Curated demo food database. Values approximate USDA FoodData Central
  * averages per 100g/100ml. In a production build this module is replaced by
@@ -399,6 +428,47 @@ export const FOODS: FoodItem[] = [
     source: 'Manufacturer label',
     naturalness: nat(42, ['Formulated with added protein', 'Typically contains sweeteners or flavorings', 'More processed than plain yogurt']),
   },
+
+  // ---- Extended set: USDA FoodData Central (SR Legacy) reference values per 100 g / 100 ml ----
+  ...[
+    f('watermelon', 'Watermelon', 'אבטיח', 'Fruits', '🍉', [30, 0.6, 7.6, 0.2, 0.4, 6.2, 1], ['1 wedge (280g)', 'piece', 280], 98, ['Whole fresh fruit']),
+    f('grapes', 'Grapes', 'ענבים', 'Fruits', '🍇', [69, 0.7, 18.1, 0.2, 0.9, 15.5, 2], ['1 cup (151g)', 'serving', 151], 98, ['Whole fresh fruit']),
+    f('strawberries', 'Strawberries', 'תותים', 'Fruits', '🍓', [32, 0.7, 7.7, 0.3, 2, 4.9, 1], ['1 cup (152g)', 'serving', 152], 98, ['Whole fresh fruit']),
+    f('mango', 'Mango', 'מנגו', 'Fruits', '🥭', [60, 0.8, 15, 0.4, 1.6, 13.7, 1], ['1 cup sliced (165g)', 'serving', 165], 98, ['Whole fresh fruit']),
+    f('pear', 'Pear', 'אגס', 'Fruits', '🍐', [57, 0.4, 15.2, 0.1, 3.1, 9.8, 1], ['1 medium (178g)', 'piece', 178], 98, ['Whole fresh fruit']),
+    f('peach', 'Peach', 'אפרסק', 'Fruits', '🍑', [39, 0.9, 9.5, 0.3, 1.5, 8.4, 0], ['1 medium (150g)', 'piece', 150], 98, ['Whole fresh fruit']),
+    f('medjool-dates', 'Dates (Medjool)', 'תמרים', 'Fruits', '🌴', [277, 1.8, 75, 0.2, 6.7, 66.5, 1], ['1 date (24g)', 'piece', 24], 92, ['Whole dried fruit, no additives']),
+    f('tomato', 'Tomato', 'עגבנייה', 'Vegetables', '🍅', [18, 0.9, 3.9, 0.2, 1.2, 2.6, 5], ['1 medium (123g)', 'piece', 123], 99, ['Whole fresh vegetable']),
+    f('cucumber', 'Cucumber', 'מלפפון', 'Vegetables', '🥒', [15, 0.7, 3.6, 0.1, 0.5, 1.7, 2], ['1 small cucumber (100g)', 'piece', 100], 99, ['Whole fresh vegetable']),
+    f('carrot', 'Carrot (raw)', 'גזר', 'Vegetables', '🥕', [41, 0.9, 9.6, 0.2, 2.8, 4.7, 69], ['1 medium (61g)', 'piece', 61], 99, ['Whole fresh vegetable']),
+    f('red-pepper', 'Red Bell Pepper (raw)', 'פלפל אדום', 'Vegetables', '🫑', [31, 1, 6, 0.3, 2.1, 4.2, 4], ['1 medium (119g)', 'piece', 119], 99, ['Whole fresh vegetable']),
+    f('potato-baked', 'Potato (baked, with skin)', 'תפוח אדמה אפוי', 'Vegetables', '🥔', [93, 2.5, 21.2, 0.1, 2.2, 1.2, 10], ['1 medium (173g)', 'piece', 173], 92, ['Whole vegetable, cooked without additives']),
+    f('corn-boiled', 'Sweet Corn (boiled)', 'תירס', 'Vegetables', '🌽', [96, 3.4, 21, 1.5, 2.4, 4.5, 1], ['1 cob kernels (100g)', 'piece', 100], 92, ['Whole vegetable, cooked without additives']),
+    f('white-bread', 'White Bread', 'לחם לבן', 'Grains', '🍞', [266, 7.6, 50.6, 3.3, 2.4, 5, 490], ['1 slice (30g)', 'piece', 30], 40, ['Made from refined flour', 'Industrially baked with several ingredients']),
+    f('couscous', 'Couscous (cooked)', 'קוסקוס', 'Grains', '🍚', [112, 3.8, 23.2, 0.2, 1.4, 0.1, 5], ['1 cup (157g)', 'serving', 157], 60, ['Made from refined semolina']),
+    f('bulgur', 'Bulgur (cooked)', 'בורגול', 'Grains', '🌾', [83, 3.1, 18.6, 0.2, 4.5, 0.1, 5], ['1 cup (182g)', 'serving', 182], 82, ['Whole grain, minimally processed']),
+    f('oats-dry', 'Rolled Oats (dry)', 'שיבולת שועל', 'Grains', '🥣', [389, 16.9, 66.3, 6.9, 10.6, 0, 2], ['1/2 cup (40g)', 'serving', 40], 88, ['Whole grain, rolled only']),
+    f('egg-white', 'Egg White', 'חלבון ביצה', 'Protein', '🥚', [52, 10.9, 0.7, 0.2, 0, 0.7, 166], ['1 large egg white (33g)', 'piece', 33], 85, ['Part of a whole food']),
+    f('egg-fried', 'Fried Egg', 'ביצת עין', 'Protein', '🍳', [196, 13.6, 0.8, 14.8, 0, 0.4, 207], ['1 large egg (46g)', 'piece', 46], 78, ['Whole food cooked in fat']),
+    f('egg-scrambled', 'Scrambled Eggs', 'חביתה מקושקשת', 'Protein', '🍳', [149, 10, 1.6, 11, 0, 1.4, 145], ['2 eggs (120g)', 'serving', 120], 78, ['Whole food cooked with fat/milk']),
+    f('chicken-thigh', 'Chicken Thigh (skinless, roasted)', 'פרגית', 'Protein', '🍗', [209, 26, 0, 10.9, 0, 0, 95], ['1 thigh (100g)', 'piece', 100], 88, ['Single-ingredient food']),
+    f('tuna-water', 'Tuna (canned in water, drained)', 'טונה במים', 'Protein', '🐟', [116, 25.5, 0, 0.8, 0, 0, 338], ['1 can drained (110g)', 'serving', 110], 75, ['Canned single-ingredient fish', 'Added salt']),
+    f('shrimp', 'Shrimp (cooked)', 'שרימפס', 'Protein', '🦐', [99, 24, 0.2, 0.3, 0, 0, 111], ['1 serving (85g)', 'serving', 85], 85, ['Single-ingredient food']),
+    f('yellow-cheese', 'Yellow Cheese (Gouda)', 'גבינה צהובה', 'Dairy', '🧀', [356, 24.9, 2.2, 27.4, 0, 2.2, 819], ['1 slice (20g)', 'piece', 20], 50, ['Fermented, aged dairy', 'Added salt']),
+    f('cheddar', 'Cheddar Cheese', 'צ׳דר', 'Dairy', '🧀', [403, 24.9, 1.3, 33.1, 0, 0.5, 621], ['1 slice (28g)', 'piece', 28], 50, ['Fermented, aged dairy', 'Added salt']),
+    f('mozzarella', 'Mozzarella (whole milk)', 'מוצרלה', 'Dairy', '🧀', [300, 22.2, 2.2, 22.4, 0, 1, 627], ['1 oz (28g)', 'serving', 28], 55, ['Fresh cheese', 'Added salt']),
+    f('feta', 'Feta Cheese', 'פטה', 'Dairy', '🧀', [264, 14.2, 4.1, 21.3, 0, 4.1, 1116], ['1 serving (30g)', 'serving', 30], 52, ['Brined cheese, high in salt']),
+    f('butter', 'Butter', 'חמאה', 'Fats', '🧈', [717, 0.9, 0.1, 81.1, 0, 0.1, 11], ['1 tsp (5g)', 'serving', 5], 60, ['Churned from cream']),
+    f('tahini', 'Tahini (raw paste)', 'טחינה גולמית', 'Spreads', '🥣', [595, 17, 21.2, 53.8, 9.3, 0.5, 115], ['1 tbsp (15g)', 'serving', 15], 80, ['Ground sesame seeds']),
+    f('walnuts', 'Walnuts', 'אגוזי מלך', 'Nuts', '🌰', [654, 15.2, 13.7, 65.2, 6.7, 2.6, 2], ['1 handful (28g)', 'serving', 28], 95, ['Whole nut']),
+    f('cashews', 'Cashews', 'קשיו', 'Nuts', '🥜', [553, 18.2, 30.2, 43.9, 3.3, 5.9, 12], ['1 handful (28g)', 'serving', 28], 90, ['Whole nut']),
+    f('chickpeas', 'Chickpeas (cooked)', 'חומוס גרגירים', 'Legumes', '🫘', [164, 8.9, 27.4, 2.6, 7.6, 4.8, 7], ['1 cup (164g)', 'serving', 164], 92, ['Whole legume, cooked']),
+    f('falafel', 'Falafel', 'פלאפל', 'Legumes', '🧆', [333, 13.3, 31.8, 17.8, 0, 0, 294], ['1 ball (17g)', 'piece', 17], 45, ['Deep-fried', 'Several ingredients']),
+    f('french-fries', 'French Fries', 'צ׳יפס', 'Snacks', '🍟', [312, 3.4, 41.4, 14.7, 3.8, 0.3, 210], ['1 medium portion (117g)', 'serving', 117], 30, ['Deep-fried in oil', 'Processed potato product']),
+    f('honey', 'Honey', 'דבש', 'Sweets', '🍯', [304, 0.3, 82.4, 0, 0.2, 82.1, 4], ['1 tsp (7g)', 'serving', 7], 70, ['Natural sweetener, concentrated sugar']),
+    f('sugar', 'Sugar', 'סוכר', 'Sweets', '🍬', [387, 0, 100, 0, 0, 100, 1], ['1 tsp (4g)', 'serving', 4], 20, ['Refined sugar']),
+    f('orange-juice', 'Orange Juice', 'מיץ תפוזים', 'Drinks', '🧃', [45, 0.7, 10.4, 0.2, 0.2, 8.4, 1], ['1 glass (240ml)', 'serving', 240], 65, ['Juice — fiber removed'], 'ml'),
+  ],
 ];
 
 /** Built-in foods first, then the user's own saved foods ("My foods"). */

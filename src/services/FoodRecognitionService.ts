@@ -8,6 +8,7 @@ import {
   analyzeFoodText,
   analyzeNutritionLabel,
   GeminiError,
+  getLastModelUsed,
   type RawAnalysisItem,
   type RawAnalysisResponse,
   type RawLabelResponse,
@@ -33,19 +34,41 @@ function normalize(text: string): string {
   return text.trim().toLowerCase();
 }
 
-/** Best-effort match against our own verified/estimated database — we always prefer real data over the vision model's own guess. */
-function matchLocalFood(name: string): FoodItem | undefined {
+/**
+ * Match against our own verified database — we always prefer real reference
+ * data over the model's own per-100g guess. The model points at an entry by
+ * id (it sees the list), which is far more reliable than fuzzy name matching:
+ * substring matching used to map e.g. "fried egg" onto boiled eggs.
+ */
+function matchLocalFood(name: string, databaseId?: string): FoodItem | undefined {
+  if (databaseId) {
+    const byId = FOODS.find((f) => f.id === databaseId);
+    if (byId) return byId;
+  }
   const q = normalize(name);
   if (!q) return undefined;
-  // A food the user already logged before (exact name) keeps the same values every time.
-  const mine = useAppStore.getState().customFoods.find((f) => normalize(f.name) === q);
-  if (mine) return mine;
   const exact = FOODS.find((f) => normalize(f.name) === q || (f.nameHe && f.nameHe === name.trim()));
   if (exact) return exact;
-  return FOODS.find((f) => {
-    const fn = normalize(f.name);
-    return fn.includes(q) || q.includes(fn) || (!!f.nameHe && (q.includes(f.nameHe) || name.includes(f.nameHe)));
-  });
+  // A food the user already logged before (exact name) keeps the same values every time.
+  return useAppStore.getState().customFoods.find((f) => normalize(f.name) === q);
+}
+
+/** "id: name" lines for the model, so it can point at verified entries. */
+const DATABASE_FOR_AI = FOODS.map((f) => `${f.id}: ${f.name}`).join('\n');
+
+/** Calories implied by the macros (Atwater factors 4/4/9). */
+function atwater(p: NutritionFacts): number {
+  return 4 * p.proteinG + 4 * p.carbsG + 9 * p.fatG;
+}
+
+/** Fixes per-100g values whose calories clearly don't match their own macros (a model slip), trusting the macro breakdown. */
+function reconcileCalories(p: NutritionFacts): NutritionFacts {
+  const implied = atwater(p);
+  if (implied <= 0) return p;
+  if (p.calories <= 0 || Math.abs(p.calories - implied) / implied > 0.35) {
+    return { ...p, calories: Math.round(implied) };
+  }
+  return p;
 }
 
 function slug(text: string): string {
@@ -77,7 +100,7 @@ function customFoodFromItem(item: RawAnalysisItem, id: string, per100g: Nutritio
     servingOptions: servings,
     defaultServing: portion,
     dataQuality: 'ai_estimate',
-    source: 'AI estimate (Gemini)',
+    source: item.referenceFood ? `AI estimate · based on ${item.referenceFood}` : 'AI estimate (Gemini)',
     naturalness: naturalnessFrom(item.naturalnessScore, 'AI estimate of how processed this food is'),
   };
 }
@@ -89,15 +112,15 @@ function confidenceBand(pct: number): ScannedFoodCandidate['confidence'] {
 }
 
 function buildCandidate(item: RawAnalysisItem): ScannedFoodCandidate {
-  const localFood = matchLocalFood(item.bestGuessName);
+  const localFood = matchLocalFood(item.bestGuessName, item.databaseId);
   const per100g: NutritionFacts = localFood
     ? localFood.per100g
-    : {
+    : reconcileCalories({
         calories: SAFE_NUM(item.per100gCalories),
         proteinG: SAFE_NUM(item.per100gProteinG),
         carbsG: SAFE_NUM(item.per100gCarbsG),
         fatG: SAFE_NUM(item.per100gFatG),
-      };
+      });
 
   const min = item.estimatedGramsMin ?? item.estimatedGramsMax ?? 100;
   const max = item.estimatedGramsMax ?? item.estimatedGramsMin ?? 100;
@@ -128,7 +151,7 @@ function buildCandidate(item: RawAnalysisItem): ScannedFoodCandidate {
         ? item.alternatives.map((label) => ({ label, foodId: matchLocalFood(label)?.id }))
         : undefined,
     matchedLocalFood: !!localFood,
-    nutritionSource: localFood?.source ?? 'AI Vision Estimate',
+    nutritionSource: localFood?.source ?? (item.referenceFood ? `AI estimate · based on ${item.referenceFood}` : 'AI estimate'),
     boundingBox:
       item.boxXPct !== undefined && item.boxYPct !== undefined && item.boxWPct !== undefined && item.boxHPct !== undefined
         ? { xPct: item.boxXPct, yPct: item.boxYPct, wPct: item.boxWPct, hPct: item.boxHPct }
@@ -196,7 +219,7 @@ class RealFoodRecognitionService implements FoodRecognitionServiceInterface {
     const apiKey = getGeminiKey();
     if (apiKey) {
       try {
-        data = await analyzeFoodPhoto(apiKey, mediaType, base64Data);
+        data = await analyzeFoodPhoto(apiKey, mediaType, base64Data, DATABASE_FOR_AI);
       } catch (err) {
         if (err instanceof GeminiError) {
           return unavailable(imageDataUrl, err.message, { detail: err.detail, needsApiKey: err.kind === 'invalid_key' });
@@ -229,6 +252,7 @@ class RealFoodRecognitionService implements FoodRecognitionServiceInterface {
       candidates,
       createdAt: new Date().toISOString(),
       recognitionAvailable: true,
+      modelUsed: apiKey ? (getLastModelUsed() ?? undefined) : undefined,
     };
   }
 
@@ -265,6 +289,7 @@ class RealFoodRecognitionService implements FoodRecognitionServiceInterface {
       createdAt: new Date().toISOString(),
       recognitionAvailable: true,
       inputKind: 'label',
+      modelUsed: getLastModelUsed() ?? undefined,
     };
   }
 
@@ -283,7 +308,7 @@ class RealFoodRecognitionService implements FoodRecognitionServiceInterface {
 
     let data: RawAnalysisResponse;
     try {
-      data = await analyzeFoodText(apiKey, text);
+      data = await analyzeFoodText(apiKey, text, DATABASE_FOR_AI);
     } catch (err) {
       if (err instanceof GeminiError) {
         return { ...unavailable('', err.message, { detail: err.detail, needsApiKey: err.kind === 'invalid_key' }), ...base };
@@ -300,6 +325,7 @@ class RealFoodRecognitionService implements FoodRecognitionServiceInterface {
       createdAt: new Date().toISOString(),
       recognitionAvailable: true,
       inputKind: 'text',
+      modelUsed: getLastModelUsed() ?? undefined,
     };
   }
 }

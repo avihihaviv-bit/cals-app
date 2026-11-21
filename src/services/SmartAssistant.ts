@@ -1,6 +1,11 @@
 import { answerAssistant, extractFoodLogText, isHebrewText, type AssistantAnswer, type AssistantContext } from './AssistantService';
 import { chatWithGemini, GeminiError, type ChatTurn } from './geminiVision';
 import { getGeminiKey } from '@/utils/geminiKey';
+import { FOODS } from '@/data/foods';
+
+const REFERENCE_TABLE = FOODS.map(
+  (f) => `${f.name}: ${f.per100g.calories} kcal, P ${f.per100g.proteinG}g, C ${f.per100g.carbsG}g, F ${f.per100g.fatG}g`,
+).join('\n');
 
 const MAX_HISTORY_TURNS = 12;
 
@@ -64,7 +69,11 @@ How to answer:
 - When suggesting food, give concrete foods with approximate amounts and their calories/protein, fitting what's remaining today.
 - ${ctx.isMinor ? 'The user is a teenager: never recommend calorie restriction, fasting, or rapid weight change. Focus on enough food, protein, growth, sleep and healthy habits.' : 'Avoid extreme diets; favor sustainable advice.'}
 - You are not a doctor. For medical conditions, eating-disorder signs, or medication questions, gently suggest talking to a doctor or dietitian.
-- To log food, the user can just write "I ate …" / "אכלתי …" in this chat, or use Scan Food.`;
+- To log food, the user can just write "I ate …" / "אכלתי …" in this chat, or use Scan Food.
+- When you quote nutrition numbers, use the app's reference values below when the food is listed (per 100 g, verified USDA data), scaled to the amount. For other foods use standard USDA values. Show the math briefly for amounts (e.g. "150 g × 31 g/100 g ≈ 47 g protein").
+
+App reference values (per 100 g):
+${REFERENCE_TABLE}`;
 }
 
 /**

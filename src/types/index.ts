@@ -264,6 +264,8 @@ export interface ScanResult {
   recognitionAvailable: boolean;
   /** Whether this result came from analyzing a photo or from text the user typed. Defaults to 'photo'. */
   inputKind?: 'photo' | 'text' | 'label';
+  /** Which Gemini model produced this result (shown for transparency). */
+  modelUsed?: string;
   /** Present when recognitionAvailable is false, to explain why (e.g. "photo too blurry to identify anything"). */
   unavailableReason?: string;
   /** Raw technical detail behind unavailableReason (HTTP status / provider message), shown small so failures are diagnosable without server logs. */

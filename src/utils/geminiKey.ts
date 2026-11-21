@@ -27,3 +27,23 @@ export function clearGeminiKey(): void {
 export function maskGeminiKey(key: string): string {
   return key.length <= 8 ? '••••' : `${key.slice(0, 4)}••••${key.slice(-4)}`;
 }
+
+const QUALITY_KEY = 'nutrition-ai-gemini-quality';
+export type AiQuality = 'best' | 'fast';
+
+/** "best" (default) tries Gemini Pro first for nutrition lookups; "fast" uses Flash only. */
+export function getAiQuality(): AiQuality {
+  try {
+    return localStorage.getItem(QUALITY_KEY) === 'fast' ? 'fast' : 'best';
+  } catch {
+    return 'best';
+  }
+}
+
+export function setAiQuality(q: AiQuality): void {
+  try {
+    localStorage.setItem(QUALITY_KEY, q);
+  } catch {
+    /* ignore */
+  }
+}
