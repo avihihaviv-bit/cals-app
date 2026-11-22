@@ -46,10 +46,33 @@ export interface RawAnalysisItem {
   measureClass?: string;
   /** Whole eggs the item is made from (omelette, fried/boiled/scrambled eggs). */
   wholeEggs?: number;
+  /** Item location as Gemini's native [ymin, xmin, ymax, xmax] on a 0-1000 scale. */
+  box2d?: number[];
+  /** Realistic runner-up identifications, each with its own per-100g values (one-tap fix in the UI). */
+  alternativeOptions?: RawAlternative[];
+  /** Likely additions that are neither visible nor included in the per-100g values (oil it was fried in…). */
+  suggestedAdditions?: RawAddition[];
+  /** Legacy percentage boxes (older cached answers and the shared Worker). */
   boxXPct?: number;
   boxYPct?: number;
   boxWPct?: number;
   boxHPct?: number;
+}
+
+export interface RawAlternative {
+  name: string;
+  databaseId?: string;
+  per100gCalories?: number;
+  per100gProteinG?: number;
+  per100gCarbsG?: number;
+  per100gFatG?: number;
+}
+
+export interface RawAddition {
+  type: string;
+  amount: number;
+  unit: string;
+  reason?: string;
 }
 
 export interface RawAnalysisResponse {
@@ -92,14 +115,27 @@ const RESPONSE_SCHEMA = {
         properties: {
           seenDescription: {
             type: 'STRING',
-            description: 'FACTS ONLY: color, shape, texture, visible components — no assumed identity, weight, or preparation.',
+            description: 'FACTS ONLY, one short sentence (max ~15 words): color, shape, texture, visible components — no assumed identity, weight, or preparation.',
           },
           bestGuessName: { type: 'STRING', description: 'Most likely specific identification in English, e.g. "Grilled chicken breast", "White rice".' },
           identificationConfidence: { type: 'INTEGER', description: 'Confidence in bestGuessName specifically, 0-100.' },
-          alternatives: {
+          alternativeOptions: {
             type: 'ARRAY',
-            items: { type: 'STRING' },
-            description: 'Other plausible identifications. Only when identificationConfidence is below 70.',
+            description:
+              'Realistic runner-up identifications, most likely first, each with its own per-100g values. Photos: always 1-2 (up to 3 when identificationConfidence is below 70). Typed text: only when genuinely ambiguous.',
+            items: {
+              type: 'OBJECT',
+              properties: {
+                name: { type: 'STRING', description: 'Specific English name, e.g. "Tofu (firm)".' },
+                databaseId: { type: 'STRING', description: 'id from the app food database when it is exactly that food; otherwise omit.' },
+                per100gCalories: { type: 'NUMBER' },
+                per100gProteinG: { type: 'NUMBER' },
+                per100gCarbsG: { type: 'NUMBER' },
+                per100gFatG: { type: 'NUMBER' },
+              },
+              required: ['name', 'per100gCalories', 'per100gProteinG', 'per100gCarbsG', 'per100gFatG'],
+              propertyOrdering: ['name', 'databaseId', 'per100gCalories', 'per100gProteinG', 'per100gCarbsG', 'per100gFatG'],
+            },
           },
           amountBasis: {
             type: 'STRING',
@@ -131,6 +167,22 @@ const RESPONSE_SCHEMA = {
             items: { type: 'STRING' },
             description: 'Sauces, oil sheen, cheese, dressing etc. actually VISIBLE on this item.',
           },
+          suggestedAdditions: {
+            type: 'ARRAY',
+            description:
+              'Fat or sugar this kind of dish almost always contains that is NOT visible and NOT already included in your per-100g values (e.g. oil an omelette or shakshuka was cooked in, dressing on a dressed salad). Empty when none or when already counted.',
+            items: {
+              type: 'OBJECT',
+              properties: {
+                type: { type: 'STRING', format: 'enum', enum: ['oil', 'butter', 'sauce', 'dressing', 'sugar', 'cheese'] },
+                amount: { type: 'NUMBER', description: 'Typical amount for this portion.' },
+                unit: { type: 'STRING', format: 'enum', enum: ['tsp', 'tbsp', 'g'] },
+                reason: { type: 'STRING', description: 'Very short reason in English, e.g. "oil it was fried in".' },
+              },
+              required: ['type', 'amount', 'unit', 'reason'],
+              propertyOrdering: ['type', 'amount', 'unit', 'reason'],
+            },
+          },
           per100gCalories: { type: 'NUMBER', description: 'Per-100g calories for this food (fallback if not in the app database).' },
           per100gProteinG: { type: 'NUMBER', description: 'Per-100g protein grams.' },
           per100gCarbsG: { type: 'NUMBER', description: 'Per-100g carb grams.' },
@@ -149,10 +201,11 @@ const RESPONSE_SCHEMA = {
             type: 'INTEGER',
             description: 'How close the food is to its whole, unprocessed form, 1-100 (fresh fruit ~98, plain grilled chicken ~90, white bread ~45, candy/soda ~10). Not a health judgment.',
           },
-          boxXPct: { type: 'NUMBER', description: 'Left edge of the item, 0-100 % of image width.' },
-          boxYPct: { type: 'NUMBER', description: 'Top edge of the item, 0-100 % of image height.' },
-          boxWPct: { type: 'NUMBER', description: 'Item width, 0-100 % of image width.' },
-          boxHPct: { type: 'NUMBER', description: 'Item height, 0-100 % of image height.' },
+          box2d: {
+            type: 'ARRAY',
+            items: { type: 'INTEGER' },
+            description: 'Photos only: tight box around this item as [ymin, xmin, ymax, xmax], each 0-1000 relative to image height/width.',
+          },
         },
         required: [
           'seenDescription',
@@ -168,13 +221,14 @@ const RESPONSE_SCHEMA = {
         ],
         // Identify → count → weigh → nutrition: the order the model writes fields is the order it reasons in.
         propertyOrdering: [
+          'box2d',
           'seenDescription',
           'bestGuessName',
           'hebrewName',
           'emoji',
           'identificationConfidence',
-          'alternatives',
           'databaseId',
+          'alternativeOptions',
           'amountBasis',
           'isCountable',
           'unitCount',
@@ -191,11 +245,8 @@ const RESPONSE_SCHEMA = {
           'per100gProteinG',
           'per100gCarbsG',
           'per100gFatG',
+          'suggestedAdditions',
           'naturalnessScore',
-          'boxXPct',
-          'boxYPct',
-          'boxWPct',
-          'boxHPct',
         ],
       },
     },
@@ -215,30 +266,43 @@ const AMOUNT_RULES = `Amounts — the app converts counts and household measures
 
 ${PORTION_REFERENCE}`;
 
-const SYSTEM_PROMPT = `You are a food-photo analysis system feeding a nutrition tracking app. Work through this protocol internally:
-1. What is in the photo overall?
-2. How many visually distinct food items are there?
-3. Which region of the photo does each item occupy?
-4. Is each region actually food, or something else (utensil, hand, label, background)?
-5. For each food item, what is the most specific correct identification?
-6. How does it appear to be prepared (raw/cooked/fried/grilled), if visible?
-7. How much is there? First COUNT whatever is countable (eggs, slices, pieces, whole fruit, falafel balls) and, for egg dishes, how many eggs went in (a 1-egg omelette is thin and about 15 cm across; a 2-egg one is thicker or wider). Then estimate weight against reference objects: a standard dinner plate is ~26-27 cm across, a side plate ~20 cm, a fork ~19 cm long, a tablespoon bowl ~4 cm, a soda can 12 cm tall, an adult palm ~8-9 cm wide. Estimate the food's footprint and height/thickness, then convert volume to weight with a realistic density (e.g. cooked rice ~0.8 g/ml packed loosely, salad leaves ~0.1 g/ml, meat ~1.05 g/ml).
-8. Which sauces, oils, dressings, cheese or toppings can you actually SEE?
-9. Is it a packaged product identifiable from its label?
-10. Only then, give per-100g nutrition values for the food AS SERVED (cooked weight for cooked foods; fried foods include absorbed oil).
-11. Check yourself: per-100g calories should roughly equal 4×protein + 4×carbs + 9×fat. If not, fix the numbers.
+/** Foods that are easy to mix up in photos — the model checks these deliberately instead of taking its first impression. */
+const LOOK_ALIKES = `Look-alikes — decide deliberately, and put the realistic runner-ups in alternativeOptions:
+- White cubes in a salad: Bulgarian/feta cheese (crumbly, matte, uneven) vs tofu (smooth, springy, even) vs halloumi/paneer (firm, often grill marks).
+- Beige dips: hummus (thick, slightly grainy, often a well of oil, paprika, whole chickpeas) vs prepared tahini (thinner, smooth, paler, pourable) vs eggplant salad / baba ganoush (fibrous, darker flecks) vs mashed potato (fluffy) vs labneh (white, glossy, dense).
+- Small white grains: white rice vs cauliflower rice (uneven, crumbly, vegetable sheen) vs ptitim / Israeli couscous (smooth glossy balls or rice-shaped pasta) vs couscous (very fine) vs bulgur (brownish) vs quinoa (tiny, with a visible curl) vs orzo.
+- Rice dishes: majadra (rice or bulgur with brown lentils and fried onion) vs yellow rice (turmeric) vs plain rice.
+- Light meat: chicken breast vs turkey vs pork vs fish (flaky layers) vs tofu; schnitzel (breaded, golden) vs breaded fish vs cordon bleu.
+- Orange vegetables: sweet potato vs pumpkin / butternut squash vs carrot.
+- Breads: pita vs laffa vs sliced bread (white vs whole-wheat: darker crumb, visible grains/seeds) vs challah (glossy, braided) vs bagel / ka'ak.
+- Pastry: bourekas (puff pastry, sesame, triangles/rectangles) vs malawach (flat, layered, pan-fried) vs jachnun (dark rolled logs) vs croissant vs rugelach.
+- Dairy: cottage cheese (visible curds) vs white cheese / gvina levana (smooth) vs yogurt vs labneh vs sour cream.
+- Drinks: water vs diet vs regular soda (read the can/bottle), black coffee vs coffee with milk (color), juice vs smoothie.
+- Cooking method: shiny, blistered, darker edges = fried; dry and matte = baked / air-fried / grilled.
+- Israeli dishes to know: shakshuka, sabich, falafel, shawarma (pita / laffa / plate), schnitzel, Israeli salad (finely diced cucumber and tomato), tabbouleh, majadra, ptitim, kubbeh, jachnun, malawach, bourekas, sambusak, me'orav yerushalmi, chraime, hamin/cholent, memula'im (stuffed vegetables), Bamba, Bissli, krembo, halva, sufganiya.`;
+
+const SYSTEM_PROMPT = `You are an expert dietitian analyzing a food photo for a nutrition tracking app used mostly in Israel. Work through this protocol internally before writing the JSON:
+1. Scan the whole photo: plates, bowls, cups, packaging, cutlery, hands. Note the size of the plate or bowl — it is your ruler.
+2. List every distinct food item. The same food in several pieces is ONE item with a count (3 falafel balls, 2 slices of bread). Skip garnish with no meaningful calories (a parsley sprig, a lemon wedge) and anything that isn't food.
+3. Locate each item: box2d = [ymin, xmin, ymax, xmax] on a 0-1000 scale of the image height and width, tight around that item only.
+4. Identify each item as specifically as the photo allows: the dish, its main ingredient and how it was prepared (raw / boiled / grilled / fried / baked). Read any visible text — brand, product name, flavor, "zero" / "light" / "diet", fat %, volume. A readable label beats a visual guess.
+5. Check the look-alikes below before settling. Use texture, color, sheen and context; if two foods remain plausible, lower identificationConfidence and list the other in alternativeOptions.
+6. How much: COUNT everything countable one by one (eggs, slices, pieces, balls, whole fruit) — never estimate a countable item's weight directly. For egg dishes judge how many eggs went in (a 1-egg omelette is thin and about 15 cm across; a 2-egg one is thicker or wider). For everything else estimate footprint × height against reference objects — a dinner plate is ~26-27 cm across, a side plate ~20 cm, a fork ~19 cm, a tablespoon bowl ~4 cm, a soda can 12 cm tall, an adult palm ~8-9 cm wide — and convert volume to weight with a realistic density (cooked rice ~0.8 g/ml, salad leaves ~0.1 g/ml, meat ~1.05 g/ml).
+7. Sauces, oil sheen, dressing, cheese you can SEE → visibleExtras. Fat this kind of dish almost always has but you can't see (oil an omelette or shakshuka was cooked in, dressing on a dressed salad) → suggestedAdditions, but only if your per-100g values don't already include it.
+8. Give per-100g nutrition for the food AS SERVED (cooked weight for cooked foods; fried foods include absorbed oil), based on a real reference entry. Check yourself: per-100g calories ≈ 4×protein + 4×carbs + 9×fat; fix the numbers if not.
 
 Hard rules:
 - Never state an assumption as observed fact. seenDescription contains only what is visually verifiable.
-- Prefer counting discrete units (eggs, slices, pieces) over guessing a weight whenever the item is countable.
 - Give an honest grams range; a wide range is more honest than a falsely narrow one.
-- If confidence in an identification is below 70, list real alternatives.
+- alternativeOptions: for every photo item give the 1-2 most realistic other foods it could be (up to 3 when identificationConfidence is below 70), each with its own per-100g values — they let the user fix a wrong guess with one tap.
+- identificationConfidence must be honest: 90+ only when the item is unmistakable or its label is readable.
 - Only set "unusable" if the photo truly cannot support even a rough estimate.
-- boxXPct/boxYPct/boxWPct/boxHPct are optional — omit them if unsure of the region.
-- Write bestGuessName and alternatives in English; also give hebrewName, one emoji and naturalnessScore per item.
+- Write bestGuessName and alternative names in English; also give hebrewName, one emoji and naturalnessScore per item.
 - Base per-100g values on a real reference entry (USDA FoodData Central, or the Israeli Ministry of Health food database for local dishes) and name it in referenceFood.
-- Items that are mixed dishes (a sandwich, pasta with sauce, a salad with dressing) can be split into components when the parts are clearly visible; otherwise treat the dish as one item with values for the whole dish.
+- Mixed dishes (a sandwich, pasta with sauce, a salad with dressing) can be split into components when the parts are clearly visible; otherwise treat the dish as one item with values for the whole dish.
 - Do not inflate portions: anchor every weight to the plate and utensils and to the standard weights below.
+
+${LOOK_ALIKES}
 
 ${AMOUNT_RULES}
 Respond with ONLY the JSON object matching the schema.`;
@@ -505,12 +569,12 @@ Rules:
 - If NO amount is given, use one typical portion from the standard weights and set a sensible min/max range around it (this is an estimate, not a fact).
 - Hebrew food words: "טחינה" alone means prepared tahini sauce (raw paste mixed with water and lemon, roughly half the calories of the raw paste); "טחינה גולמית" is the raw paste. "גבינה לבנה" is Israeli soft white cheese (5% unless stated). "ביצת עין" is a fried egg, "ביצה קשה" a hard-boiled egg, "חביתה" an omelette.
 - seenDescription must quote what the user wrote for that item (e.g. 'You wrote: "150g chicken breast"') — do not invent preparation details.
-- identificationConfidence is how sure you are that bestGuessName matches what they meant; if below 70 list alternatives.
+- identificationConfidence is how sure you are that bestGuessName matches what they meant; if below 70 give alternativeOptions (with per-100g values).
 - Give per-100g calories/protein/carbs/fat for the food as typically prepared/eaten (cooked weight unless they said raw/dry). Base them on a real reference entry (USDA FoodData Central, or the Israeli Ministry of Health database for local foods) and name it in referenceFood. Check that calories ≈ 4×protein + 4×carbs + 9×fat.
 - Israeli products and dishes are common (e.g. קוטג׳ 5%, במבה, שניצל, בורקס, לחמניה, פיתה, סלט ישראלי, שקשוקה): use typical Israeli recipes and package sizes.
 - For pasta/rice/grains: if the user doesn't say raw/dry, assume the stated grams are cooked.
 - Also give hebrewName (common Hebrew name), one emoji, and naturalnessScore.
-- Do not include bounding boxes.
+- Do not include box2d or suggestedAdditions (an addition the user mentions is its own item).
 - If the text is not about food at all, set isFood false.
 
 ${AMOUNT_RULES}
@@ -601,19 +665,43 @@ export function analyzeNutritionLabel(apiKey: string, mediaType: string, base64D
 /** Appends the app's verified food list so the model can point at a real entry instead of estimating. */
 function withDatabase(prompt: string, database: string): string {
   return database
-    ? `${prompt}\n\nApp food database (id: name). When an item is exactly one of these foods in the same preparation, set databaseId to its id — its verified values will be used:\n${database}`
+    ? `${prompt}\n\nApp food database (id: name). When an item is exactly one of these foods in the same preparation, set databaseId to its id — its verified values will be used. Entries marked "(user's own)" are foods this user saved, often a product they scanned: when the photo or text clearly matches one, prefer it.\n${database}`
     : prompt;
 }
 
-/** Analyzes a food photo. */
-export function analyzeFoodPhoto(apiKey: string, mediaType: string, base64Data: string, database = ''): Promise<RawAnalysisResponse> {
-  return generateAnalysis(
-    apiKey,
-    withDatabase(SYSTEM_PROMPT, database),
-    [{ inline_data: { mime_type: mediaType, data: base64Data } }, { text: 'Analyze this food photo following your protocol.' }],
-    'Gemini declined to analyze this photo — try a different shot.',
-    { effort: 'low', hedgeAfterMs: 13_000 },
-  );
+export interface PhotoContext {
+  /** What the user told us about this meal ("2-egg omelette, fried in oil") — facts the photo can't show. */
+  note?: string;
+  /** This user's earlier corrections ("You said X → it was really Y"), one per line. */
+  corrections?: string;
+}
+
+/** Analyzes a food photo, plus anything the user added about it. */
+export function analyzeFoodPhoto(
+  apiKey: string,
+  mediaType: string,
+  base64Data: string,
+  database = '',
+  context: PhotoContext = {},
+): Promise<RawAnalysisResponse> {
+  let systemPrompt = withDatabase(SYSTEM_PROMPT, database);
+  if (context.corrections) {
+    systemPrompt += `\n\nThis user corrected your identifications before. When a photo looks like one of these cases, weigh the correction (a strong hint, not a rule):\n${context.corrections}`;
+  }
+  const parts: unknown[] = [
+    { inline_data: { mime_type: mediaType, data: base64Data } },
+    { text: 'Analyze this food photo following your protocol.' },
+  ];
+  const note = context.note?.trim();
+  if (note) {
+    parts.push({
+      text: `The user adds about this meal: «${note}». Treat it as true: it overrides what the photo suggests about identity, counts, amounts and preparation (stated amounts use amountBasis stated_weight / stated_count / stated_measure). Anything it mentions that isn't visible (e.g. "fried in 1 tbsp oil", "2 teaspoons of sugar in the coffee") is its own item with that amount — don't repeat it in suggestedAdditions.`,
+    });
+  }
+  return generateAnalysis(apiKey, systemPrompt, parts, 'Gemini declined to analyze this photo — try a different shot.', {
+    effort: 'low',
+    hedgeAfterMs: 13_000,
+  });
 }
 
 /** Looks up foods the user typed (e.g. "150g chicken breast and 200g rice") — any food, with the exact amounts they gave. */
@@ -644,7 +732,7 @@ async function generateAnalysis(
       system_instruction: { parts: [{ text: systemPrompt }] },
       contents: [{ role: 'user', parts: userParts }],
       // The cap stops a runaway answer from hanging the scan; a real answer is far shorter.
-      generationConfig: { responseMimeType: 'application/json', responseSchema: RESPONSE_SCHEMA, maxOutputTokens: 6144 },
+      generationConfig: { responseMimeType: 'application/json', responseSchema: RESPONSE_SCHEMA, maxOutputTokens: 8192 },
     },
     blockedMessage,
     (text) => {

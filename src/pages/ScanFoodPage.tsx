@@ -1,9 +1,9 @@
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useEffect, useRef, useState } from 'react';
-import { Camera, Check, ImagePlus, KeyRound, Loader2, NotebookPen, PencilLine, RotateCcw, ScanLine, Search, SlidersHorizontal, Tag, X } from 'lucide-react';
+import { Camera, Check, ImagePlus, KeyRound, Lightbulb, Loader2, NotebookPen, PencilLine, RotateCcw, ScanLine, Search, SlidersHorizontal, Tag, X } from 'lucide-react';
 import { getGeminiKey } from '@/utils/geminiKey';
 import { markUpdateBusy } from '@/hooks/useAutoUpdate';
-import { foodRecognitionService, IDENTIFICATION_CONFIDENCE_THRESHOLD } from '@/services/FoodRecognitionService';
+import { foodFromAlternative, foodRecognitionService, IDENTIFICATION_CONFIDENCE_THRESHOLD } from '@/services/FoodRecognitionService';
 import { foodSearchService } from '@/services/FoodSearchService';
 import { useAppStore } from '@/store/useAppStore';
 import { useAddContext } from '@/hooks/useAddContext';
@@ -19,7 +19,10 @@ import { ScanCoachOpinion } from '@/components/food/ScanCoachOpinion';
 import { calculateNutrition, sumNutrition } from '@/utils/nutritionCalculator';
 import { findFoodById } from '@/data/foods';
 import { pluralizeUnit } from '@/utils/units';
-import type { FoodAlternative, FoodItem, HiddenIngredientEntry, MealType, NutritionFacts, ScanResult, ScannedFoodCandidate } from '@/types';
+import { rememberCorrection } from '@/utils/scanCorrections';
+import { HIDDEN_INGREDIENT_DEFS, hiddenIngredientNutrition } from '@/utils/hiddenIngredients';
+import { generateId } from '@/utils/id';
+import type { FoodAlternative, FoodItem, HiddenIngredientEntry, MealType, NutritionFacts, ScanResult, ScannedFoodCandidate, SuggestedDetail } from '@/types';
 
 type ScanStage = 'capture' | 'analyzing' | 'review' | 'error';
 
@@ -60,6 +63,11 @@ export function ScanFoodPage() {
   const autoRanText = useRef(false);
   const isText = scan?.inputKind === 'text' || (stage === 'analyzing' && !imageDataUrl);
   const [labelMode, setLabelMode] = useState(false);
+  /** What the user tells the AI about a photo (counts, hidden oil, what it really is). */
+  const [photoNote, setPhotoNote] = useState('');
+  const [fixNoteOpen, setFixNoteOpen] = useState(false);
+  const [highlightId, setHighlightId] = useState<string | null>(null);
+  const [imageRatio, setImageRatio] = useState(4 / 3);
   const isLabel = scan?.inputKind === 'label' || (stage === 'analyzing' && labelMode);
 
   // Arriving with ?text= (from food search or the AI chat) looks it up right away.
@@ -140,16 +148,25 @@ export function ScanFoodPage() {
     }
   }
 
-  async function runRecognition(dataUrl: string, fresh = false) {
+  async function runRecognition(dataUrl: string, fresh = false, note = photoNote) {
     setLabelMode(false);
-    await track(() => foodRecognitionService.recognize(dataUrl, { fresh }));
+    setFixNoteOpen(false);
+    setHighlightId(null);
+    await track(() => foodRecognitionService.recognize(dataUrl, { fresh, note }));
+  }
+
+  /** Box tapped on the photo ↔ card: highlight both and bring the other into view. */
+  function focusCandidate(id: string, scrollTo: 'card' | 'photo') {
+    setHighlightId((cur) => (cur === id && scrollTo === 'photo' ? null : id));
+    const el = document.getElementById(scrollTo === 'card' ? `cand-${id}` : 'scan-photo');
+    el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
 
   function analyzeAgainFresh() {
     if (!scan) return;
     if (scan.inputKind === 'text') runTextLookup(typedText, true);
     else if (imageDataUrl && scan.inputKind === 'label') runLabel(imageDataUrl, true);
-    else if (imageDataUrl) runRecognition(imageDataUrl, true);
+    else if (imageDataUrl) runRecognition(imageDataUrl, true, photoNote);
   }
 
   function recomputeCandidate(c: ScannedFoodCandidate, grams: number, addedDetails: HiddenIngredientEntry[]): ScannedFoodCandidate {
@@ -219,7 +236,11 @@ export function ScanFoodPage() {
     setCandidates((prev) => prev.filter((c) => c.id !== id));
   }
 
-  function applyFoodSwap(id: string, food: FoodItem) {
+  /** Swaps an item to another food. `aiOnly` = a food the AI suggested that isn't in the database yet (saved to My foods when added). */
+  function applyFoodSwap(id: string, food: FoodItem, aiOnly = false) {
+    const current = candidates.find((c) => c.id === id);
+    // Remember the fix, so the next photo of the same thing is recognized right.
+    if (current && !isText && !isLabel) rememberCorrection(current.aiName ?? current.name, food.name, aiOnly ? undefined : food.id);
     setCandidates((prev) =>
       prev.map((c) => {
         if (c.id !== id) return c;
@@ -235,12 +256,35 @@ export function ScanFoodPage() {
           identificationConfidence: 100,
           confidence: 'high',
           alternatives: undefined,
-          matchedLocalFood: true,
-          nutritionSource: food.source,
+          matchedLocalFood: !aiOnly,
+          customFood: aiOnly ? food : undefined,
+          nutritionSource: aiOnly ? 'AI estimate (Gemini)' : food.source,
         };
       }),
     );
     setSwapSearchFor(null);
+  }
+
+  /** "Probably fried in 1 tbsp oil" → one tap adds it. */
+  function acceptSuggestion(id: string, s: SuggestedDetail) {
+    const def = HIDDEN_INGREDIENT_DEFS[s.type];
+    const entry: HiddenIngredientEntry = {
+      id: generateId('hidden'),
+      label: `${def.label} ${s.amount}${s.unit}`,
+      emoji: def.emoji,
+      nutrition: hiddenIngredientNutrition(s.type, s.amount, s.unit),
+    };
+    setCandidates((prev) =>
+      prev.map((c) =>
+        c.id === id
+          ? { ...recomputeCandidate(c, c.estimatedGrams, [...(c.addedDetails ?? []), entry]), suggestedDetails: c.suggestedDetails?.filter((x) => x !== s) }
+          : c,
+      ),
+    );
+  }
+
+  function dismissSuggestion(id: string, s: SuggestedDetail) {
+    setCandidates((prev) => prev.map((c) => (c.id === id ? { ...c, suggestedDetails: c.suggestedDetails?.filter((x) => x !== s) } : c)));
   }
 
   function confirmPrimaryGuess(id: string) {
@@ -256,6 +300,13 @@ export function ScanFoodPage() {
         applyFoodSwap(id, food);
         return;
       }
+    }
+    // Not in the database, but the AI gave its values — still a one-tap fix.
+    const current = candidates.find((c) => c.id === id);
+    const aiFood = current ? foodFromAlternative(alt, current.estimatedGrams) : undefined;
+    if (aiFood) {
+      applyFoodSwap(id, aiFood, true);
+      return;
     }
     setSwapSearchFor(id);
   }
@@ -352,6 +403,18 @@ export function ScanFoodPage() {
             onChange={(e) => handleFile(e.target.files?.[0])}
           />
           <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => handleFile(e.target.files?.[0])} />
+          <div className="w-full text-left">
+            <label htmlFor="photo-note" className="text-xs font-semibold text-muted">
+              Anything the photo can&apos;t show? <span className="font-normal">(optional, before the photo)</span>
+            </label>
+            <input
+              id="photo-note"
+              value={photoNote}
+              onChange={(e) => setPhotoNote(e.target.value)}
+              placeholder="e.g. 2-egg omelette, fried in oil · חביתה מ-2 ביצים"
+              className="mt-1 w-full rounded-xl border border-default bg-surface-alt px-3 py-2 text-sm text-fg outline-none focus:border-primary-400"
+            />
+          </div>
         </div>
       )}
 
@@ -481,15 +544,29 @@ export function ScanFoodPage() {
       {stage === 'review' && scan && (
         <div className="space-y-5">
           {imageDataUrl && (
-            <div className="overflow-hidden rounded-xl2 shadow-card">
-              <div className="relative aspect-video w-full">
-                <img src={imageDataUrl} alt="Captured food" className="h-full w-full object-cover" />
+            <div id="scan-photo" className="overflow-hidden rounded-xl2 bg-black shadow-card">
+              {/* Shown at the photo's own shape, so the item boxes sit exactly on the food. */}
+              <div className="relative mx-auto w-full" style={{ aspectRatio: imageRatio, maxWidth: `calc(55vh * ${imageRatio})` }}>
+                <img
+                  src={imageDataUrl}
+                  alt="Captured food"
+                  className="absolute inset-0 h-full w-full object-cover"
+                  onLoad={(e) => {
+                    const { naturalWidth: w, naturalHeight: h } = e.currentTarget;
+                    if (w > 0 && h > 0) setImageRatio(w / h);
+                  }}
+                />
                 {candidates.map(
-                  (c) =>
+                  (c, i) =>
                     c.boundingBox && (
-                      <div
+                      <button
+                        type="button"
                         key={`box-${c.id}`}
-                        className="pointer-events-none absolute rounded-lg border-2 border-white/90 shadow-[0_0_0_1px_rgba(0,0,0,0.35)]"
+                        aria-label={`Item ${i + 1}: ${c.name}`}
+                        onClick={() => focusCandidate(c.id, 'card')}
+                        className={`absolute rounded-lg border-2 shadow-[0_0_0_1px_rgba(0,0,0,0.35)] transition ${
+                          highlightId === c.id ? 'border-primary-400 bg-primary-400/20' : highlightId ? 'border-white/40' : 'border-white/90'
+                        }`}
                         style={{
                           left: `${c.boundingBox.xPct}%`,
                           top: `${c.boundingBox.yPct}%`,
@@ -497,10 +574,10 @@ export function ScanFoodPage() {
                           height: `${c.boundingBox.hPct}%`,
                         }}
                       >
-                        <span className="absolute -top-6 left-0 whitespace-nowrap rounded-md bg-black/70 px-1.5 py-0.5 text-[10px] font-semibold text-white">
-                          {c.name} · ~{c.estimatedGrams}g
+                        <span className="absolute left-1 top-1 flex h-5 min-w-[20px] items-center justify-center rounded-full bg-black/75 px-1 text-[11px] font-bold text-white">
+                          {i + 1}
                         </span>
-                      </div>
+                      </button>
                     ),
                 )}
               </div>
@@ -560,15 +637,33 @@ export function ScanFoodPage() {
           <div>
             <h2 className="mb-2 text-base font-bold text-fg">{isLabel ? 'What we read' : isText ? 'What we understood' : 'What we detected'}</h2>
             <div className="space-y-3">
-              {candidates.map((c) => {
+              {candidates.map((c, index) => {
                 const identificationCertain = c.identificationConfidence >= IDENTIFICATION_CONFIDENCE_THRESHOLD;
                 return (
-                  <div key={c.id} className="rounded-xl2 bg-surface p-4 shadow-card">
+                  <div
+                    key={c.id}
+                    id={`cand-${c.id}`}
+                    className={`rounded-xl2 bg-surface p-4 shadow-card transition ${highlightId === c.id ? 'ring-2 ring-primary-400' : ''}`}
+                  >
                     <div className="flex items-start justify-between gap-2">
                       <div className="flex items-start gap-2.5">
-                        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-surface-alt text-lg">
-                          {c.imageEmoji ?? '🍽️'}
-                        </span>
+                        {c.boundingBox ? (
+                          <button
+                            type="button"
+                            onClick={() => focusCandidate(c.id, 'photo')}
+                            aria-label={`Show item ${index + 1} on the photo`}
+                            className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-surface-alt text-lg"
+                          >
+                            {c.imageEmoji ?? '🍽️'}
+                            <span className="absolute -left-1 -top-1 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-black/75 px-0.5 text-[10px] font-bold text-white">
+                              {index + 1}
+                            </span>
+                          </button>
+                        ) : (
+                          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-surface-alt text-lg">
+                            {c.imageEmoji ?? '🍽️'}
+                          </span>
+                        )}
                         <div>
                           <p className="font-semibold text-fg">{c.name}</p>
                           <p className="text-xs text-muted">
@@ -630,6 +725,58 @@ export function ScanFoodPage() {
                         {swapSearchFor === c.id && (
                           <InlineFoodSwapSearch onSelect={(food) => applyFoodSwap(c.id, food)} onCancel={() => setSwapSearchFor(null)} />
                         )}
+                      </div>
+                    )}
+
+                    {identificationCertain && c.alternatives && c.alternatives.length > 0 && (
+                      <div className="mt-2">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="text-[11px] font-semibold text-muted">Not {c.name}?</span>
+                          {c.alternatives.map((alt) => (
+                            <button
+                              key={alt.label}
+                              onClick={() => chooseAlternative(c.id, alt)}
+                              title={alt.fromCorrection ? 'You chose this last time' : undefined}
+                              className="rounded-full bg-surface-alt px-2.5 py-1 text-[11px] font-semibold text-fg ring-1 ring-inset ring-default hover:bg-surface-alt2"
+                            >
+                              {alt.fromCorrection ? '↺ ' : ''}
+                              {alt.label}
+                            </button>
+                          ))}
+                          <button
+                            onClick={() => setSwapSearchFor(swapSearchFor === c.id ? null : c.id)}
+                            className="rounded-full px-2 py-1 text-[11px] font-semibold text-muted hover:text-fg"
+                          >
+                            Other…
+                          </button>
+                        </div>
+                        {swapSearchFor === c.id && (
+                          <InlineFoodSwapSearch onSelect={(food) => applyFoodSwap(c.id, food)} onCancel={() => setSwapSearchFor(null)} />
+                        )}
+                      </div>
+                    )}
+
+                    {c.suggestedDetails && c.suggestedDetails.length > 0 && (
+                      <div className="mt-2 rounded-lg bg-primary-50 px-3 py-2">
+                        <p className="flex items-center gap-1 text-[11px] font-semibold text-primary-800">
+                          <Lightbulb size={12} /> Probably in it but not visible — add it if true:
+                        </p>
+                        <div className="mt-1.5 flex flex-col gap-1.5">
+                          {c.suggestedDetails.map((d) => (
+                            <div key={`${d.type}-${d.amount}`} className="flex items-center gap-2">
+                              <button
+                                onClick={() => acceptSuggestion(c.id, d)}
+                                className="flex-1 rounded-full bg-surface px-3 py-1.5 text-left text-xs font-semibold text-primary-700 ring-1 ring-inset ring-primary-200 hover:bg-primary-50"
+                              >
+                                + {d.amount} {d.unit} {HIDDEN_INGREDIENT_DEFS[d.type].label.toLowerCase()} · ~{hiddenIngredientNutrition(d.type, d.amount, d.unit).calories} kcal
+                                {d.reason && <span className="font-normal text-muted"> — {d.reason}</span>}
+                              </button>
+                              <button onClick={() => dismissSuggestion(c.id, d)} aria-label="Not added" className="text-muted hover:text-fg">
+                                <X size={14} />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     )}
 
@@ -723,6 +870,49 @@ export function ScanFoodPage() {
               })}
             </div>
           </div>
+
+          {imageDataUrl && !isLabel && (
+            <div className="rounded-xl2 bg-surface p-4 shadow-card">
+              {fixNoteOpen ? (
+                <>
+                  <p className="flex items-center gap-2 text-sm font-semibold text-fg">
+                    <PencilLine size={15} className="text-primary-600" /> Tell the AI what it got wrong
+                  </p>
+                  <p className="mt-0.5 text-xs text-muted">
+                    What it really is, how many, how it was cooked — e.g. &quot;it&apos;s tofu, not chicken&quot;, &quot;2 eggs&quot;, &quot;fried in 1 tbsp oil&quot;. Hebrew works too.
+                  </p>
+                  <textarea
+                    value={photoNote}
+                    onChange={(e) => setPhotoNote(e.target.value)}
+                    rows={2}
+                    autoFocus
+                    placeholder="זה טופו ולא עוף, חביתה מ-2 ביצים…"
+                    className="mt-2 w-full resize-none rounded-xl border border-default bg-surface-alt px-3 py-2 text-sm text-fg outline-none focus:border-primary-400"
+                  />
+                  <div className="mt-2 flex gap-2">
+                    <Button fullWidth disabled={!photoNote.trim()} onClick={() => runRecognition(imageDataUrl, true, photoNote)}>
+                      Analyze again with my note
+                    </Button>
+                    <Button variant="secondary" onClick={() => setFixNoteOpen(false)}>
+                      Cancel
+                    </Button>
+                  </div>
+                </>
+              ) : (
+                <button onClick={() => setFixNoteOpen(true)} className="flex w-full items-center justify-between gap-2 text-left">
+                  <span>
+                    <span className="flex items-center gap-2 text-sm font-semibold text-fg">
+                      <PencilLine size={15} className="text-primary-600" /> Something wrong? Tell the AI
+                    </span>
+                    <span className="block text-xs text-muted">
+                      {photoNote.trim() ? `Your note: “${photoNote.trim()}”` : 'Add what the photo can’t show and it re-analyzes with it.'}
+                    </span>
+                  </span>
+                  <span className="shrink-0 text-xs font-semibold text-primary-700">Fix</span>
+                </button>
+              )}
+            </div>
+          )}
 
           {candidates.length === 0 ? (
             <ErrorState title="No items left" description="You removed every detected item — retake or search manually." onRetry={retake} />

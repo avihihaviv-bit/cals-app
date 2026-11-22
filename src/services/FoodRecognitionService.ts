@@ -6,6 +6,7 @@ import { cacheGet, cacheSet, fingerprint } from '@/utils/resultCache';
 import { lookupLocally, type LocalTextMatch } from '@/utils/localTextLookup';
 import { pluralizeUnit } from '@/utils/units';
 import { downscaleImage } from '@/utils/resizeImage';
+import { correctionFor, correctionsForPrompt } from '@/utils/scanCorrections';
 import {
   EGG_FOOD_IDS,
   gramsPerMeasure,
@@ -22,16 +23,19 @@ import {
   analyzeNutritionLabel,
   GeminiError,
   getLastModelUsed,
+  type RawAlternative,
   type RawAnalysisItem,
   type RawAnalysisResponse,
   type RawLabelResponse,
 } from '@/services/geminiVision';
 import { useAppStore } from '@/store/useAppStore';
-import type { FoodItem, NaturalnessInfo, NutritionFacts, ScanResult, ScannedFoodCandidate, ServingOption } from '@/types';
+import type { FoodAlternative, FoodItem, NaturalnessInfo, NutritionFacts, ScanResult, ScannedFoodCandidate, ServingOption, SuggestedDetail } from '@/types';
 
 export interface RecognizeOptions {
   /** Skip remembered answers and ask the AI again. */
   fresh?: boolean;
+  /** Photos: what the user told us about the meal (counts, hidden oil, what it really is). */
+  note?: string;
 }
 
 export interface FoodRecognitionServiceInterface {
@@ -41,7 +45,7 @@ export interface FoodRecognitionServiceInterface {
 }
 
 /** Bump when prompts change, so remembered answers from older prompts aren't reused. */
-const PROMPT_VERSION = 5;
+const PROMPT_VERSION = 6;
 const cacheKey = (kind: string, content: string) => `${kind}:v${PROMPT_VERSION}:${getAiQuality()}:${fingerprint(content)}`;
 
 /** Rounds an estimated weight so tiny model-to-model wobble (183 g vs 187 g) doesn't show up as a different answer. */
@@ -70,7 +74,8 @@ function normalize(text: string): string {
  */
 function matchLocalFood(name: string, databaseId?: string): FoodItem | undefined {
   if (databaseId) {
-    const byId = FOODS.find((f) => f.id === databaseId);
+    // Built-in foods first, then the user's own saved foods (a product they scanned, a food they logged before).
+    const byId = findFoodById(databaseId);
     if (byId) return byId;
   }
   const q = normalize(name);
@@ -85,7 +90,16 @@ function matchLocalFood(name: string, databaseId?: string): FoodItem | undefined
 }
 
 /** "id: name" lines for the model, so it can point at verified entries. */
-const DATABASE_FOR_AI = FOODS.map((f) => `${f.id}: ${f.name}`).join('\n');
+const BUILT_IN_FOR_AI = FOODS.map((f) => `${f.id}: ${f.name}`).join('\n');
+const MAX_USER_FOODS_FOR_AI = 60;
+
+/** Built-in foods plus the user's own most recent saved foods, so a product they scanned once is recognized with its exact values. */
+function databaseForAI(): string {
+  const mine = useAppStore.getState().customFoods.slice(-MAX_USER_FOODS_FOR_AI).reverse();
+  if (mine.length === 0) return BUILT_IN_FOR_AI;
+  const lines = mine.map((f) => `${f.id}: ${f.name}${f.nameHe ? ` / ${f.nameHe}` : ''} (user's own)`);
+  return `${BUILT_IN_FOR_AI}\n${lines.join('\n')}`;
+}
 
 /** Calories implied by the macros (Atwater factors 4/4/9). */
 function atwater(p: NutritionFacts): number {
@@ -233,6 +247,97 @@ function confidenceBand(pct: number): ScannedFoodCandidate['confidence'] {
   return 'low';
 }
 
+/** Gemini's native [ymin, xmin, ymax, xmax] box (0-1000) → percentages for the overlay; older % boxes still work. */
+function boxFrom(item: RawAnalysisItem): ScannedFoodCandidate['boundingBox'] {
+  const b = item.box2d;
+  if (Array.isArray(b)) {
+    if (b.length !== 4 || !b.every((n) => typeof n === 'number' && Number.isFinite(n))) return undefined;
+    const [y0, x0, y1, x1] = b.map((n) => Math.max(0, Math.min(1000, n)));
+    if (x1 - x0 < 10 || y1 - y0 < 10) return undefined;
+    return { xPct: x0 / 10, yPct: y0 / 10, wPct: (x1 - x0) / 10, hPct: (y1 - y0) / 10 };
+  }
+  const { boxXPct: x, boxYPct: y, boxWPct: w, boxHPct: h } = item;
+  if ([x, y, w, h].some((n) => typeof n !== 'number' || !Number.isFinite(n))) return undefined;
+  if (x! < 0 || y! < 0 || w! <= 0 || h! <= 0 || x! + w! > 101 || y! + h! > 101) return undefined;
+  return { xPct: x!, yPct: y!, wPct: w!, hPct: h! };
+}
+
+function per100gFromAlternative(a: RawAlternative): NutritionFacts | undefined {
+  const p = {
+    calories: SAFE_NUM(a.per100gCalories),
+    proteinG: SAFE_NUM(a.per100gProteinG),
+    carbsG: SAFE_NUM(a.per100gCarbsG),
+    fatG: SAFE_NUM(a.per100gFatG),
+  };
+  return p.calories + p.proteinG + p.carbsG + p.fatG > 0 ? reconcileCalories(p) : undefined;
+}
+
+/**
+ * Other things this item could be, so a wrong guess is a one-tap fix: what
+ * the user chose the last time the AI said the same name comes first, then
+ * the AI's runner-ups (with their own values, or the verified entry when one
+ * matches).
+ */
+function alternativesFor(item: RawAnalysisItem, chosen: FoodItem | undefined): FoodAlternative[] | undefined {
+  const out: FoodAlternative[] = [];
+  const seen = new Set([normalize(chosen?.name ?? item.bestGuessName)]);
+  const push = (alt: FoodAlternative) => {
+    const k = normalize(alt.label);
+    if (!k || seen.has(k)) return;
+    seen.add(k);
+    out.push(alt);
+  };
+  const past = correctionFor(item.bestGuessName);
+  if (past) {
+    const food = past.toId ? findFoodById(past.toId) : matchLocalFood(past.to);
+    push({ label: food?.name ?? past.to, foodId: food?.id, fromCorrection: true });
+  }
+  for (const a of item.alternativeOptions ?? []) {
+    if (!a || typeof a.name !== 'string' || !a.name.trim()) continue;
+    const food = matchLocalFood(a.name, a.databaseId);
+    push(food ? { label: food.name, foodId: food.id } : { label: a.name.trim(), per100g: per100gFromAlternative(a) });
+  }
+  for (const label of item.alternatives ?? []) {
+    if (typeof label === 'string') push({ label, foodId: matchLocalFood(label)?.id });
+  }
+  return out.length > 0 ? out.slice(0, 4) : undefined;
+}
+
+const ADDITION_TYPES = new Set<SuggestedDetail['type']>(['oil', 'butter', 'sauce', 'dressing', 'sugar', 'cheese']);
+const ADDITION_UNITS = new Set<SuggestedDetail['unit']>(['g', 'tbsp', 'tsp']);
+
+/** The AI's "probably cooked in oil"-style hints, sanity-limited. Only offered — the user decides. */
+function suggestionsFrom(item: RawAnalysisItem): SuggestedDetail[] | undefined {
+  const list: SuggestedDetail[] = [];
+  for (const a of item.suggestedAdditions ?? []) {
+    const type = a?.type as SuggestedDetail['type'];
+    const unit = a?.unit as SuggestedDetail['unit'];
+    if (!ADDITION_TYPES.has(type) || !ADDITION_UNITS.has(unit) || !(a.amount > 0)) continue;
+    const amount = unit === 'g' ? Math.min(60, Math.max(1, Math.round(a.amount))) : Math.min(4, Math.max(0.5, Math.round(a.amount * 2) / 2));
+    if (list.some((x) => x.type === type)) continue;
+    list.push({ type, amount, unit, reason: typeof a.reason === 'string' ? a.reason.slice(0, 80) : '' });
+  }
+  return list.length > 0 ? list.slice(0, 2) : undefined;
+}
+
+/** A food record for an alternative the user picked that isn't in the database (values: the AI's per-100g estimate). */
+export function foodFromAlternative(alt: FoodAlternative, grams: number): FoodItem | undefined {
+  if (!alt.per100g) return undefined;
+  const portion: ServingOption = { label: `1 portion (${grams}g)`, unit: 'serving', grams };
+  return {
+    id: `ai-${slug(alt.label)}`,
+    name: alt.label,
+    category: 'My foods',
+    imageEmoji: alt.emoji || '🍽️',
+    per100g: alt.per100g,
+    servingOptions: [{ label: '100g', unit: 'g', grams: 100 }, portion],
+    defaultServing: portion,
+    dataQuality: 'ai_estimate',
+    source: 'AI estimate (Gemini)',
+    naturalness: naturalnessFrom(undefined, ''),
+  };
+}
+
 function buildCandidate(item: RawAnalysisItem, kind: 'photo' | 'text'): ScannedFoodCandidate {
   const localFood = matchLocalFood(item.bestGuessName, item.databaseId);
   const per100g: NutritionFacts = localFood
@@ -269,16 +374,13 @@ function buildCandidate(item: RawAnalysisItem, kind: 'photo' | 'text'): ScannedF
     nutrition: calculateNutrition(per100g, grams),
     identificationConfidence: confidence,
     confidence: confidenceBand(confidence),
-    alternatives:
-      !identificationCertain && item.alternatives && item.alternatives.length > 0
-        ? item.alternatives.map((label) => ({ label, foodId: matchLocalFood(label)?.id }))
-        : undefined,
+    // Photos always offer runner-ups (a confident wrong guess is the common failure); typed text only when unsure.
+    alternatives: kind === 'photo' || !identificationCertain ? alternativesFor(item, localFood) : undefined,
+    suggestedDetails: kind === 'photo' ? suggestionsFrom(item) : undefined,
+    aiName: item.bestGuessName,
     matchedLocalFood: !!localFood,
     nutritionSource: localFood?.source ?? (item.referenceFood ? `AI estimate · based on ${item.referenceFood}` : 'AI estimate'),
-    boundingBox:
-      item.boxXPct !== undefined && item.boxYPct !== undefined && item.boxWPct !== undefined && item.boxHPct !== undefined
-        ? { xPct: item.boxXPct, yPct: item.boxYPct, wPct: item.boxWPct, hPct: item.boxHPct }
-        : undefined,
+    boundingBox: kind === 'photo' ? boxFrom(item) : undefined,
   };
 }
 
@@ -340,7 +442,8 @@ class RealFoodRecognitionService implements FoodRecognitionServiceInterface {
 
     let data: RawAnalysisResponse;
     const apiKey = getGeminiKey();
-    const key = cacheKey('photo', base64Data);
+    const note = opts.note?.trim() ?? '';
+    const key = cacheKey('photo', note ? `${base64Data}|${note}` : base64Data);
     const remembered = opts.fresh ? undefined : cacheGet<RawAnalysisResponse>(key);
     let resultSource: ScanResult['resultSource'] = 'ai';
     if (remembered) {
@@ -348,7 +451,7 @@ class RealFoodRecognitionService implements FoodRecognitionServiceInterface {
       resultSource = 'cache';
     } else if (apiKey) {
       try {
-        data = await analyzeFoodPhoto(apiKey, mediaType, base64Data, DATABASE_FOR_AI);
+        data = await analyzeFoodPhoto(apiKey, mediaType, base64Data, databaseForAI(), { note, corrections: correctionsForPrompt() });
         if (data.isFood !== false && !data.unusable && data.items?.length) cacheSet(key, data);
       } catch (err) {
         if (err instanceof GeminiError) {
@@ -458,7 +561,7 @@ class RealFoodRecognitionService implements FoodRecognitionServiceInterface {
     const key = cacheKey('text', normalize(text));
     const remembered = opts.fresh ? undefined : cacheGet<RawAnalysisResponse>(key);
     try {
-      data = remembered ?? (await analyzeFoodText(apiKey, text, DATABASE_FOR_AI));
+      data = remembered ?? (await analyzeFoodText(apiKey, text, databaseForAI()));
       if (!remembered && data.isFood !== false && data.items?.length) cacheSet(key, data);
     } catch (err) {
       if (err instanceof GeminiError) {

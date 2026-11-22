@@ -247,6 +247,20 @@ export interface FoodAlternative {
   label: string;
   /** Local database id to swap to, when this alternative matches a known food. Absent means "something else" — routes to manual search. */
   foodId?: string;
+  /** The AI's per-100g values for this alternative, so choosing it is a one-tap fix even when it isn't in the database. */
+  per100g?: NutritionFacts;
+  hebrewName?: string;
+  emoji?: string;
+  /** The user picked this the last time the AI called the food by the same name. */
+  fromCorrection?: boolean;
+}
+
+/** Something the AI thinks was probably added but can't be seen (cooking oil, dressing) — offered to the user, never added on its own. */
+export interface SuggestedDetail {
+  type: 'oil' | 'butter' | 'sauce' | 'dressing' | 'sugar' | 'cheese';
+  amount: number;
+  unit: 'g' | 'tbsp' | 'tsp';
+  reason: string;
 }
 
 export interface ScannedFoodCandidate {
@@ -275,7 +289,7 @@ export interface ScannedFoodCandidate {
   identificationConfidence: number;
   /** Legacy coarse band, derived from identificationConfidence — kept for existing UI/copy that expects it. */
   confidence: 'low' | 'medium' | 'high';
-  /** Other plausible identifications — only meaningful when identificationConfidence is below threshold. */
+  /** Other plausible identifications: shown prominently below the confidence threshold, as a quick "not this?" row otherwise. */
   alternatives?: FoodAlternative[];
   /** True when the nutrition came from our own verified/estimated database; false means it's the vision model's own per-100g guess (dataQuality 'ai_estimate', source 'AI Vision Estimate'). */
   matchedLocalFood: boolean;
@@ -285,6 +299,10 @@ export interface ScannedFoodCandidate {
   boundingBox?: { xPct: number; yPct: number; wPct: number; hPct: number };
   /** Hidden ingredients (oil, sauce, etc.) the user manually added because the AI can't see them in the photo. */
   addedDetails?: HiddenIngredientEntry[];
+  /** Likely-but-invisible additions the AI suggests (e.g. oil it was fried in), each one tap to add. */
+  suggestedDetails?: SuggestedDetail[];
+  /** The AI's original name for this item — kept so a correction can be remembered for next time. */
+  aiName?: string;
   /** For foods not in the built-in database: the food record to save into "My foods" when this is logged, so it can be found and re-logged later. */
   customFood?: FoodItem;
 }
