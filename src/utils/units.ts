@@ -25,3 +25,19 @@ export function cmToIn(cm: number): number {
 export function inToCm(inch: number): number {
   return Math.round(inch * 2.54 * 10) / 10;
 }
+
+/** "2 slice" → "2 slices", "1 eggs" → "1 egg" — unit labels follow the count. */
+export function pluralizeUnit(label: string | undefined, count: number): string | undefined {
+  if (!label) return label;
+  const parts = label.split(' ');
+  const last = parts.pop()!;
+  let word = last;
+  if (!/^[a-z]+$/i.test(last) || /^(pcs|tbsp|tsp|kernels|medium|small|large)$/i.test(last)) return label;
+  if (count <= 1) {
+    if (/oes$/i.test(last)) word = last.slice(0, -2);
+    else if (/[^s]s$/i.test(last)) word = last.slice(0, -1);
+  } else if (!/s$/i.test(last)) {
+    word = `${last}s`;
+  }
+  return [...parts, word].join(' ');
+}

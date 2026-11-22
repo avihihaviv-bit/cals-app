@@ -3,8 +3,19 @@ import { calculateNutrition } from '@/utils/nutritionCalculator';
 import { generateId } from '@/utils/id';
 import { getAiQuality, getGeminiKey } from '@/utils/geminiKey';
 import { cacheGet, cacheSet, fingerprint } from '@/utils/resultCache';
-import { lookupLocally } from '@/utils/localTextLookup';
+import { lookupLocally, type LocalTextMatch } from '@/utils/localTextLookup';
+import { pluralizeUnit } from '@/utils/units';
 import { downscaleImage } from '@/utils/resizeImage';
+import {
+  EGG_FOOD_IDS,
+  gramsPerMeasure,
+  isEggUnit,
+  MEASURE_LABEL,
+  measureClassOf,
+  measureFromWord,
+  plainEggDishId,
+  type MeasureUnit,
+} from '@/data/portions';
 import {
   analyzeFoodPhoto,
   analyzeFoodText,
@@ -30,7 +41,7 @@ export interface FoodRecognitionServiceInterface {
 }
 
 /** Bump when prompts change, so remembered answers from older prompts aren't reused. */
-const PROMPT_VERSION = 4;
+const PROMPT_VERSION = 5;
 const cacheKey = (kind: string, content: string) => `${kind}:v${PROMPT_VERSION}:${getAiQuality()}:${fingerprint(content)}`;
 
 /** Rounds an estimated weight so tiny model-to-model wobble (183 g vs 187 g) doesn't show up as a different answer. */
@@ -66,6 +77,9 @@ function matchLocalFood(name: string, databaseId?: string): FoodItem | undefined
   if (!q) return undefined;
   const exact = FOODS.find((f) => normalize(f.name) === q || (f.nameHe && f.nameHe === name.trim()));
   if (exact) return exact;
+  // "1-egg omelette", "Fried eggs": plain egg dishes map to the verified entry (mixed ones like "omelette with cheese" don't).
+  const eggId = plainEggDishId(name);
+  if (eggId) return FOODS.find((f) => f.id === eggId);
   // A food the user already logged before (exact name) keeps the same values every time.
   return useAppStore.getState().customFoods.find((f) => normalize(f.name) === q);
 }
@@ -100,8 +114,9 @@ function naturalnessFrom(score: number | undefined, why: string): NaturalnessInf
 const SAFE_NUM = (n: number | undefined) => (typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : 0);
 
 /** The record saved into "My foods" when an AI-identified food is logged, so it's searchable and re-loggable later. */
-function customFoodFromItem(item: RawAnalysisItem, id: string, per100g: NutritionFacts, grams: number): FoodItem {
-  const unitGrams = item.isCountable && item.unitCount ? Math.round(grams / item.unitCount) : null;
+function customFoodFromItem(item: RawAnalysisItem, id: string, per100g: NutritionFacts, grams: number, amount: AmountResolution): FoodItem {
+  const isMeasure = !!amount.measure;
+  const unitGrams = !isMeasure && amount.unitGrams ? Math.round(amount.unitGrams) : null;
   const servings: ServingOption[] = [{ label: '100g', unit: 'g', grams: 100 }];
   const portion: ServingOption = unitGrams
     ? { label: `1 piece (${unitGrams}g)`, unit: 'piece', grams: unitGrams }
@@ -119,7 +134,97 @@ function customFoodFromItem(item: RawAnalysisItem, id: string, per100g: Nutritio
     dataQuality: 'ai_estimate',
     source: item.referenceFood ? `AI estimate · based on ${item.referenceFood}` : 'AI estimate (Gemini)',
     naturalness: naturalnessFrom(item.naturalnessScore, 'AI estimate of how processed this food is'),
+    measureClass: measureClassOf(undefined, item.measureClass),
   };
+}
+
+const fmt = (n: number) => (Number.isInteger(n) ? String(n) : String(Math.round(n * 10) / 10));
+
+interface AmountResolution {
+  grams: number;
+  range?: [number, number];
+  unitCount?: number;
+  unitLabel?: string;
+  unitGrams?: number;
+  measure?: MeasureUnit;
+  note?: string;
+}
+
+/** Can the AI's unit ("slices") use this food's verified piece weight ("1 slice (32g)")? */
+function pieceFits(unitLabel: string | undefined, pieceLabel: string, food: FoodItem): boolean {
+  if (!unitLabel) return false;
+  const u = unitLabel.toLowerCase().replace(/(es|s)$/, '').trim();
+  const p = pieceLabel.toLowerCase();
+  if (u && p.includes(u)) return true;
+  // Whole fruit/veg pieces are labelled "1 medium (123g)": accept "tomatoes", "pieces", "whole"…
+  if (/^1 (medium|small|large)/.test(p)) {
+    return /^(piece|unit|whole|fruit|item|pc)$/.test(u) || food.name.toLowerCase().startsWith(u.slice(0, 4));
+  }
+  return false;
+}
+
+/**
+ * Works out how much was eaten. The AI identifies and counts; grams come from
+ * fixed tables wherever possible (eggs, spoons, cups, verified piece weights),
+ * so "a 1-egg omelette" is always 60 g and "a tablespoon of hummus" 20 g —
+ * never a different guess each time. Only a true visual estimate uses the
+ * AI's weight, rounded.
+ */
+function resolveAmount(item: RawAnalysisItem, localFood: FoodItem | undefined, kind: 'photo' | 'text'): AmountResolution {
+  const rawMin = item.estimatedGramsMin ?? item.estimatedGramsMax ?? 100;
+  const rawMax = item.estimatedGramsMax ?? item.estimatedGramsMin ?? 100;
+  const mid = (rawMin + rawMax) / 2;
+
+  // 1. Grams the user typed are never changed.
+  if (item.amountBasis === 'stated_weight' && rawMin > 0) {
+    return { grams: Math.round(mid) };
+  }
+
+  // 2. Plain egg dishes: number of eggs × verified weight per egg.
+  const eggs = item.wholeEggs && item.wholeEggs > 0 ? item.wholeEggs : item.isCountable && isEggUnit(item.unitLabel) ? item.unitCount : undefined;
+  if (eggs && eggs > 0 && eggs <= 12 && localFood && EGG_FOOD_IDS.has(localFood.id)) {
+    const per = localFood.servingOptions.find((o) => o.unit === 'piece')?.grams;
+    if (per) {
+      const unit = eggs === 1 ? 'egg' : 'eggs';
+      return { grams: Math.round(per * eggs), unitCount: eggs, unitLabel: unit, unitGrams: per, note: `${fmt(eggs)} ${unit} × ${per} g per egg (standard)` };
+    }
+  }
+
+  // 3. Household measures (כף, כפית, כוס, חופן): a fixed table, not a guess.
+  const measure: MeasureUnit | undefined =
+    item.measureUnit && item.measureUnit !== 'none' ? item.measureUnit : item.isCountable ? measureFromWord(item.unitLabel) : undefined;
+  const measureCount = item.measureUnit && item.measureUnit !== 'none' ? item.measureCount : item.unitCount;
+  if (measure && measureCount && measureCount > 0 && measureCount <= 20) {
+    const per = gramsPerMeasure(localFood, measure, item.measureClass);
+    if (per) {
+      const [one, many] = MEASURE_LABEL[measure];
+      const label = measureCount <= 1 ? one : many;
+      return {
+        grams: Math.round(per * measureCount),
+        unitCount: measureCount,
+        unitLabel: label,
+        unitGrams: per,
+        measure,
+        note: `${fmt(measureCount)} ${label} × ${per} g (standard household measure)`,
+      };
+    }
+  }
+
+  // 4. Counted units: the verified piece weight when the unit matches, else the AI's own weight per unit.
+  if (item.isCountable && item.unitCount && item.unitCount > 0) {
+    const count = item.unitCount;
+    const piece = localFood?.servingOptions.find((o) => o.unit === 'piece');
+    if (localFood && piece && pieceFits(item.unitLabel, piece.label, localFood)) {
+      return { grams: Math.round(piece.grams * count), unitCount: count, unitLabel: pluralizeUnit(item.unitLabel, count), unitGrams: piece.grams, note: `${fmt(count)} × ${piece.label}` };
+    }
+    return { grams: Math.round(mid), unitCount: count, unitLabel: pluralizeUnit(item.unitLabel, count), unitGrams: mid / count };
+  }
+
+  // 5. A real estimate: an exact typed amount stays as is, an estimated range is rounded.
+  if (rawMin === rawMax) return { grams: Math.round(mid) };
+  const min = roundGrams(rawMin);
+  const max = roundGrams(rawMax);
+  return { grams: roundGrams(mid), range: min !== max ? [min, max] : undefined };
 }
 
 function confidenceBand(pct: number): ScannedFoodCandidate['confidence'] {
@@ -128,7 +233,7 @@ function confidenceBand(pct: number): ScannedFoodCandidate['confidence'] {
   return 'low';
 }
 
-function buildCandidate(item: RawAnalysisItem): ScannedFoodCandidate {
+function buildCandidate(item: RawAnalysisItem, kind: 'photo' | 'text'): ScannedFoodCandidate {
   const localFood = matchLocalFood(item.bestGuessName, item.databaseId);
   const per100g: NutritionFacts = localFood
     ? localFood.per100g
@@ -139,13 +244,8 @@ function buildCandidate(item: RawAnalysisItem): ScannedFoodCandidate {
         fatG: SAFE_NUM(item.per100gFatG),
       });
 
-  const rawMin = item.estimatedGramsMin ?? item.estimatedGramsMax ?? 100;
-  const rawMax = item.estimatedGramsMax ?? item.estimatedGramsMin ?? 100;
-  // An exact amount (the user typed "150g") or a counted one (2 eggs) is kept as is; an estimated range is rounded.
-  const exact = rawMin === rawMax || !!item.isCountable;
-  const min = exact ? rawMin : roundGrams(rawMin);
-  const max = exact ? rawMax : roundGrams(rawMax);
-  const grams = exact ? Math.round((rawMin + rawMax) / 2) : roundGrams((rawMin + rawMax) / 2);
+  const amount = resolveAmount(item, localFood, kind);
+  const grams = Math.max(1, Math.min(3000, amount.grams));
 
   const confidence = Math.max(0, Math.min(100, Math.round(item.identificationConfidence ?? 0)));
   const identificationCertain = confidence >= IDENTIFICATION_CONFIDENCE_THRESHOLD;
@@ -156,13 +256,15 @@ function buildCandidate(item: RawAnalysisItem): ScannedFoodCandidate {
     foodId,
     name: localFood?.name ?? item.bestGuessName,
     imageEmoji: localFood?.imageEmoji ?? item.emoji,
-    customFood: localFood ? undefined : customFoodFromItem(item, foodId, per100g, grams),
+    customFood: localFood ? undefined : customFoodFromItem(item, foodId, per100g, grams, amount),
     seenDescription: item.seenDescription,
     visibleExtras: item.visibleExtras && item.visibleExtras.length > 0 ? item.visibleExtras : undefined,
-    unitCount: item.isCountable ? item.unitCount : undefined,
-    unitLabel: item.isCountable ? item.unitLabel : undefined,
+    unitCount: amount.unitCount,
+    unitLabel: amount.unitCount ? amount.unitLabel : undefined,
+    unitGrams: amount.unitGrams,
+    amountNote: amount.note,
     estimatedGrams: grams,
-    estimatedGramsRange: min !== max ? [Math.round(min), Math.round(max)] : undefined,
+    estimatedGramsRange: amount.range,
     per100gUsed: per100g,
     nutrition: calculateNutrition(per100g, grams),
     identificationConfidence: confidence,
@@ -273,7 +375,7 @@ class RealFoodRecognitionService implements FoodRecognitionServiceInterface {
       return unavailable(imageDataUrl, data.unusableReason || 'Couldn’t identify anything in this photo — try a clearer, well-lit shot.');
     }
 
-    const candidates = data.items.map((item) => buildCandidate(item));
+    const candidates = data.items.map((item) => buildCandidate(item, 'photo'));
     return {
       id: generateId('scan'),
       imageDataUrl,
@@ -338,7 +440,7 @@ class RealFoodRecognitionService implements FoodRecognitionServiceInterface {
     if (local) {
       return {
         id: generateId('scan'),
-        candidates: local.map((m) => localCandidate(m.raw, m.food, m.grams, m.count, m.portionAssumed)),
+        candidates: local.map((m) => localCandidate(m)),
         createdAt: new Date().toISOString(),
         recognitionAvailable: true,
         inputKind: 'text',
@@ -370,7 +472,7 @@ class RealFoodRecognitionService implements FoodRecognitionServiceInterface {
     }
     return {
       id: generateId('scan'),
-      candidates: data.items.map((item) => buildCandidate(item)),
+      candidates: data.items.map((item) => buildCandidate(item, 'text')),
       createdAt: new Date().toISOString(),
       recognitionAvailable: true,
       inputKind: 'text',
@@ -381,8 +483,8 @@ class RealFoodRecognitionService implements FoodRecognitionServiceInterface {
 }
 
 /** A typed food matched exactly in the built-in list — verified values, no AI. */
-function localCandidate(raw: string, food: FoodItem, grams: number, count: number | undefined, portionAssumed: boolean): ScannedFoodCandidate {
-  const pieceLabel = food.servingOptions.find((o) => o.unit === 'piece')?.label;
+function localCandidate(m: LocalTextMatch): ScannedFoodCandidate {
+  const { raw, food, grams, count, portionAssumed } = m;
   return {
     id: generateId('cand'),
     foodId: food.id,
@@ -390,7 +492,9 @@ function localCandidate(raw: string, food: FoodItem, grams: number, count: numbe
     imageEmoji: food.imageEmoji,
     seenDescription: portionAssumed ? `You wrote: "${raw}" — no amount given, so a typical portion is used. Adjust below.` : `You wrote: "${raw}"`,
     unitCount: count,
-    unitLabel: count ? (pieceLabel?.replace(/^1\s*/, '').replace(/\s*\(.*\)$/, '') || 'pcs') : undefined,
+    unitLabel: count ? m.unitLabel || 'pcs' : undefined,
+    unitGrams: count ? m.unitGrams : undefined,
+    amountNote: portionAssumed ? `No amount given — typical portion: ${food.defaultServing.label}` : m.note,
     estimatedGrams: grams,
     per100gUsed: food.per100g,
     nutrition: calculateNutrition(food.per100g, grams),

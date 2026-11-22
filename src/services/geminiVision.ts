@@ -10,9 +10,10 @@
  */
 
 import { getAiQuality } from '@/utils/geminiKey';
+import { MEASURE_CLASSES, PORTION_REFERENCE } from '@/data/portions';
 
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
-const REQUEST_TIMEOUT_MS = 45_000;
+const REQUEST_TIMEOUT_MS = 35_000;
 // Pro models think longer before answering — give them more room.
 const PRO_TIMEOUT_MS = 100_000;
 const MAX_MODELS_TO_TRY = 4;
@@ -38,6 +39,13 @@ export interface RawAnalysisItem {
   naturalnessScore?: number;
   databaseId?: string;
   referenceFood?: string;
+  /** How the amount is known: typed by the user, counted, or estimated. */
+  amountBasis?: 'stated_weight' | 'stated_count' | 'stated_measure' | 'counted' | 'estimated';
+  measureUnit?: 'tablespoon' | 'teaspoon' | 'cup' | 'handful' | 'none';
+  measureCount?: number;
+  measureClass?: string;
+  /** Whole eggs the item is made from (omelette, fried/boiled/scrambled eggs). */
+  wholeEggs?: number;
   boxXPct?: number;
   boxYPct?: number;
   boxWPct?: number;
@@ -93,9 +101,29 @@ const RESPONSE_SCHEMA = {
             items: { type: 'STRING' },
             description: 'Other plausible identifications. Only when identificationConfidence is below 70.',
           },
+          amountBasis: {
+            type: 'STRING',
+            format: 'enum',
+            enum: ['stated_weight', 'stated_count', 'stated_measure', 'counted', 'estimated'],
+            description: 'How the amount is known: user gave grams/ml, user gave a number of units, user used a spoon/cup/handful, you counted units in the photo, or an estimate.',
+          },
           isCountable: { type: 'BOOLEAN', description: 'True when naturally counted (eggs, slices, pieces, whole fruit).' },
           unitCount: { type: 'NUMBER', description: 'Number of units, only when isCountable.' },
           unitLabel: { type: 'STRING', description: 'Unit name, e.g. "eggs", "slices". Only when isCountable.' },
+          wholeEggs: { type: 'NUMBER', description: 'Number of whole eggs this item is made from (omelette, fried, boiled, scrambled eggs). 0 if none.' },
+          measureUnit: {
+            type: 'STRING',
+            format: 'enum',
+            enum: ['tablespoon', 'teaspoon', 'cup', 'handful', 'none'],
+            description: 'Household measure the user stated (כף=tablespoon, כפית=teaspoon, כוס=cup, חופן=handful), else "none".',
+          },
+          measureCount: { type: 'NUMBER', description: 'How many of measureUnit, e.g. 2 for "2 כפות", 0.5 for "חצי כוס".' },
+          measureClass: {
+            type: 'STRING',
+            format: 'enum',
+            enum: [...MEASURE_CLASSES],
+            description: 'Density class used to convert spoons/cups to grams (see the instructions).',
+          },
           estimatedGramsMin: { type: 'NUMBER', description: 'Low end of an honest weight estimate in grams (or ml).' },
           estimatedGramsMax: { type: 'NUMBER', description: 'High end of an honest weight estimate in grams (or ml).' },
           visibleExtras: {
@@ -130,6 +158,7 @@ const RESPONSE_SCHEMA = {
           'seenDescription',
           'bestGuessName',
           'identificationConfidence',
+          'amountBasis',
           'estimatedGramsMin',
           'estimatedGramsMax',
           'per100gCalories',
@@ -137,11 +166,54 @@ const RESPONSE_SCHEMA = {
           'per100gCarbsG',
           'per100gFatG',
         ],
+        // Identify → count → weigh → nutrition: the order the model writes fields is the order it reasons in.
+        propertyOrdering: [
+          'seenDescription',
+          'bestGuessName',
+          'hebrewName',
+          'emoji',
+          'identificationConfidence',
+          'alternatives',
+          'databaseId',
+          'amountBasis',
+          'isCountable',
+          'unitCount',
+          'unitLabel',
+          'wholeEggs',
+          'measureUnit',
+          'measureCount',
+          'measureClass',
+          'estimatedGramsMin',
+          'estimatedGramsMax',
+          'visibleExtras',
+          'referenceFood',
+          'per100gCalories',
+          'per100gProteinG',
+          'per100gCarbsG',
+          'per100gFatG',
+          'naturalnessScore',
+          'boxXPct',
+          'boxYPct',
+          'boxWPct',
+          'boxHPct',
+        ],
       },
     },
   },
   required: ['isFood', 'items'],
+  propertyOrdering: ['isFood', 'unusable', 'unusableReason', 'items'],
 };
+
+/** Shared rules for amounts — the app converts counts and household measures to grams with its own table. */
+const AMOUNT_RULES = `Amounts — the app converts counts and household measures to grams with its own standard table, so report WHAT and HOW MANY precisely:
+- amountBasis: "stated_weight" when the user gave grams/ml; "stated_count" when they gave a number of units (2 eggs, 3 slices); "stated_measure" when they used a household measure (כף/tablespoon, כפית/teaspoon, כוס/cup, חופן/handful); "counted" when you counted units in a photo; otherwise "estimated".
+- measureUnit + measureCount for household measures: "2 כפות חומוס" → tablespoon, 2; "כפית סוכר" → teaspoon, 1; "חצי כוס אורז" → cup, 0.5. Otherwise measureUnit "none".
+- measureClass for every item: fat (oil, butter), sugar, syrup (honey, silan, jam), spread (peanut butter, raw tahini paste, chocolate spread), dip (hummus, prepared tahini, labneh, cream cheese, cottage, yogurt, matbucha, eggplant salad), cooked (rice, pasta, couscous, legumes, cooked vegetables, diced salad, mixed dishes), liquid (milk, juice, soup, thin sauce), powder (flour, cocoa, protein powder, grated cheese), nuts (nuts, seeds), cereal (oats, granola, cornflakes), fruitveg (berries, grapes, chopped raw vegetables), leafy (lettuce, spinach, herbs), other.
+- wholeEggs: how many whole eggs the item is made from (omelette, fried, boiled, scrambled). "חביתה מביצה אחת" or "1-egg omelette" → 1. A plain omelette with no egg count → 2. 0 for non-egg foods.
+- Plain egg dishes (omelette, fried, boiled, scrambled eggs with nothing else) are their own item with the matching databaseId; cheese, vegetables or sauce cooked into them make it a mixed dish.
+- Always still fill estimatedGramsMin/Max, using the standard weights below.
+
+${PORTION_REFERENCE}`;
 
 const SYSTEM_PROMPT = `You are a food-photo analysis system feeding a nutrition tracking app. Work through this protocol internally:
 1. What is in the photo overall?
@@ -150,7 +222,7 @@ const SYSTEM_PROMPT = `You are a food-photo analysis system feeding a nutrition 
 4. Is each region actually food, or something else (utensil, hand, label, background)?
 5. For each food item, what is the most specific correct identification?
 6. How does it appear to be prepared (raw/cooked/fried/grilled), if visible?
-7. What portion size is it? Measure against reference objects: a standard dinner plate is ~26-27 cm across, a side plate ~20 cm, a fork ~19 cm long, a tablespoon bowl ~4 cm, a soda can 12 cm tall, an adult palm ~8-9 cm wide. Estimate the food's footprint and height/thickness, then convert volume to weight with a realistic density (e.g. cooked rice ~0.8 g/ml packed loosely, salad leaves ~0.1 g/ml, meat ~1.05 g/ml).
+7. How much is there? First COUNT whatever is countable (eggs, slices, pieces, whole fruit, falafel balls) and, for egg dishes, how many eggs went in (a 1-egg omelette is thin and about 15 cm across; a 2-egg one is thicker or wider). Then estimate weight against reference objects: a standard dinner plate is ~26-27 cm across, a side plate ~20 cm, a fork ~19 cm long, a tablespoon bowl ~4 cm, a soda can 12 cm tall, an adult palm ~8-9 cm wide. Estimate the food's footprint and height/thickness, then convert volume to weight with a realistic density (e.g. cooked rice ~0.8 g/ml packed loosely, salad leaves ~0.1 g/ml, meat ~1.05 g/ml).
 8. Which sauces, oils, dressings, cheese or toppings can you actually SEE?
 9. Is it a packaged product identifiable from its label?
 10. Only then, give per-100g nutrition values for the food AS SERVED (cooked weight for cooked foods; fried foods include absorbed oil).
@@ -166,18 +238,105 @@ Hard rules:
 - Write bestGuessName and alternatives in English; also give hebrewName, one emoji and naturalnessScore per item.
 - Base per-100g values on a real reference entry (USDA FoodData Central, or the Israeli Ministry of Health food database for local dishes) and name it in referenceFood.
 - Items that are mixed dishes (a sandwich, pasta with sauce, a salad with dressing) can be split into components when the parts are clearly visible; otherwise treat the dish as one item with values for the whole dish.
+- Do not inflate portions: anchor every weight to the plate and utensils and to the standard weights below.
+
+${AMOUNT_RULES}
 Respond with ONLY the JSON object matching the schema.`;
 
 let cachedModels: { key: string; models: string[] } | null = null;
 let lastModelUsed: string | null = null;
-/** Fixed seed + temperature 0: the same input gets the same answer as far as the API allows. */
+/** Fixed seed (+ temperature 0 on pre-Gemini-3 models): the same input gets the same answer as far as the API allows. */
 const DETERMINISTIC_SEED = 7;
-/** Models that rejected a thinking budget — they're sent requests without one. */
-const noThinkingConfig = new Set<string>();
 
 /** The model that produced the most recent successful answer (shown for transparency). */
 export function getLastModelUsed(): string | null {
   return lastModelUsed;
+}
+
+// ---- What the app has learned about each model, remembered on the device ----
+// v: alias → the real model version behind it (from responses), so Gemini 3
+//    gets its own settings even when called through "gemini-flash-latest".
+// t: which thinking-setting forms a model rejected ("level" = Gemini 3 style, "budget" = Gemini 2.5 style).
+// c: models that hit their free quota → skip until this time, instead of wasting a round trip every scan.
+interface Learned {
+  v: Record<string, string>;
+  t: Record<string, { level?: boolean; budget?: boolean }>;
+  c: Record<string, number>;
+}
+const LEARNED_KEY = 'nutrition-ai-gemini-learned';
+let learned: Learned = loadLearned();
+
+function loadLearned(): Learned {
+  try {
+    const raw = JSON.parse(localStorage.getItem(LEARNED_KEY) ?? 'null');
+    if (raw && typeof raw === 'object') return { v: raw.v ?? {}, t: raw.t ?? {}, c: raw.c ?? {} };
+  } catch {
+    /* ignore */
+  }
+  return { v: {}, t: {}, c: {} };
+}
+
+function saveLearned() {
+  try {
+    localStorage.setItem(LEARNED_KEY, JSON.stringify(learned));
+  } catch {
+    /* ignore */
+  }
+}
+
+function learnVersion(model: string, modelVersion: unknown) {
+  if (typeof modelVersion !== 'string' || !modelVersion || learned.v[model] === modelVersion) return;
+  learned = { ...learned, v: { ...learned.v, [model]: modelVersion } };
+  saveLearned();
+}
+
+function resolvedName(model: string): string {
+  return learned.v[model] ?? model;
+}
+
+function generationOf(model: string): number | null {
+  const m = resolvedName(model).match(/gemini-(\d+(?:\.\d+)?)/);
+  return m ? Number(m[1]) : null;
+}
+
+function tierOf(model: string): 'lite' | 'flash' | 'pro' | 'other' {
+  const r = resolvedName(model);
+  return /flash-lite/.test(r) ? 'lite' : /flash/.test(r) ? 'flash' : /pro/.test(r) ? 'pro' : 'other';
+}
+
+/** Gemini 3+ is tuned for its default temperature (lower values can make it loop) and uses "thinking levels". */
+function isModernModel(model: string): boolean {
+  const g = generationOf(model);
+  return g !== null && g >= 3;
+}
+
+type Effort = 'none' | 'low';
+
+/** A small, fixed amount of "thinking": unlimited thinking was most of the wait, and made timing unpredictable. */
+function thinkingConfigFor(model: string, effort: Effort): Record<string, unknown> | null {
+  const rejected = learned.t[model] ?? {};
+  const gen = generationOf(model);
+  const tier = tierOf(model);
+  if (gen !== null && gen < 2.5) return null; // older models don't think
+  const level = { thinkingLevel: tier === 'pro' ? 'low' : effort === 'none' ? 'minimal' : 'low' };
+  const budget = { thinkingBudget: tier === 'pro' ? (effort === 'none' ? 128 : 512) : effort === 'none' ? 0 : 512 };
+  // Gemini 3: "thinking level"; Gemini 2.5 (or not yet known): the older "budget". Each falls back to the other if rejected.
+  const order = isModernModel(model) ? [level, budget] : [budget, level];
+  for (const form of order) {
+    if ('thinkingLevel' in form ? !rejected.level : !rejected.budget) return form;
+  }
+  return null;
+}
+
+function coolDown(model: string, bodyText: string) {
+  let ms = 60_000;
+  if (/PerDay/i.test(bodyText)) ms = 60 * 60_000;
+  else {
+    const delay = bodyText.match(/"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"/);
+    if (delay) ms = Math.min(10 * 60_000, Math.max(5_000, Number(delay[1]) * 1000));
+  }
+  learned = { ...learned, c: { ...learned.c, [model]: Date.now() + ms } };
+  saveLearned();
 }
 
 interface ListedModel {
@@ -207,18 +366,38 @@ function compareRanks(a: string, b: string): number {
   return 0;
 }
 
-async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = REQUEST_TIMEOUT_MS): Promise<Response> {
+interface FetchedText {
+  ok: boolean;
+  status: number;
+  text: string;
+}
+
+/**
+ * fetch + read the whole body under one timeout (a response can stall after
+ * its headers, too). `signal` lets a request that lost the race be cancelled.
+ */
+async function fetchText(url: string, init: RequestInit, timeoutMs = REQUEST_TIMEOUT_MS, signal?: AbortSignal): Promise<FetchedText> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  const onAbort = () => controller.abort();
+  signal?.addEventListener('abort', onAbort);
   try {
-    return await fetch(url, { ...init, signal: controller.signal });
+    const res = await fetch(url, { ...init, signal: controller.signal });
+    const text = await res.text();
+    return { ok: res.ok, status: res.status, text };
   } catch (err) {
-    if ((err as Error).name === 'AbortError') {
+    if (timedOut) {
       throw new GeminiError('network', 'Gemini took too long to answer — try again.', `Timed out after ${timeoutMs / 1000}s`);
     }
+    if (signal?.aborted) throw new GeminiError('network', 'Cancelled.', 'aborted');
     throw new GeminiError('network', "Couldn't reach Gemini — check your internet connection.", String(err));
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
   }
 }
 
@@ -274,10 +453,10 @@ export async function listUsableModels(apiKey: string, opts: { fresh?: boolean }
     }
   }
 
-  const res = await fetchWithTimeout(`${API_BASE}/models?pageSize=200`, {
+  const res = await fetchText(`${API_BASE}/models?pageSize=200`, {
     headers: { 'x-goog-api-key': apiKey },
   });
-  const bodyText = await res.text();
+  const bodyText = res.text;
 
   if (!res.ok) {
     if (isInvalidKeyResponse(res.status, bodyText)) {
@@ -321,8 +500,10 @@ const TEXT_SYSTEM_PROMPT = `You are a nutrition-lookup system feeding a nutritio
 Rules:
 - Create one item per distinct food. Translate names to English for bestGuessName (e.g. "חזה עוף" -> "Chicken breast (cooked)").
 - If the user states an amount in grams or ml, use EXACTLY that: set estimatedGramsMin and estimatedGramsMax both to it. Never change a stated amount.
-- If the user states a count ("2 eggs", "3 slices of bread"), set isCountable true with unitCount/unitLabel and convert to grams with a standard weight per unit.
-- If NO amount is given, estimate one typical portion and set a sensible min/max range around it (this is an estimate, not a fact).
+- If the user states a count ("2 eggs", "3 slices of bread"), set isCountable true with unitCount/unitLabel and convert to grams with the standard weight per unit below.
+- If the user uses a household measure (כף, כפית, כוס, חופן), fill measureUnit/measureCount and convert with the standard table below — a spoon is never a guess.
+- If NO amount is given, use one typical portion from the standard weights and set a sensible min/max range around it (this is an estimate, not a fact).
+- Hebrew food words: "טחינה" alone means prepared tahini sauce (raw paste mixed with water and lemon, roughly half the calories of the raw paste); "טחינה גולמית" is the raw paste. "גבינה לבנה" is Israeli soft white cheese (5% unless stated). "ביצת עין" is a fried egg, "ביצה קשה" a hard-boiled egg, "חביתה" an omelette.
 - seenDescription must quote what the user wrote for that item (e.g. 'You wrote: "150g chicken breast"') — do not invent preparation details.
 - identificationConfidence is how sure you are that bestGuessName matches what they meant; if below 70 list alternatives.
 - Give per-100g calories/protein/carbs/fat for the food as typically prepared/eaten (cooked weight unless they said raw/dry). Base them on a real reference entry (USDA FoodData Central, or the Israeli Ministry of Health database for local foods) and name it in referenceFood. Check that calories ≈ 4×protein + 4×carbs + 9×fat.
@@ -331,6 +512,8 @@ Rules:
 - Also give hebrewName (common Hebrew name), one emoji, and naturalnessScore.
 - Do not include bounding boxes.
 - If the text is not about food at all, set isFood false.
+
+${AMOUNT_RULES}
 Respond with ONLY the JSON object matching the schema.`;
 
 export interface RawLabelResponse {
@@ -401,7 +584,7 @@ export function analyzeNutritionLabel(apiKey: string, mediaType: string, base64D
       contents: [
         { role: 'user', parts: [{ inline_data: { mime_type: mediaType, data: base64Data } }, { text: 'Read this nutrition label.' }] },
       ],
-      generationConfig: { responseMimeType: 'application/json', responseSchema: LABEL_SCHEMA, temperature: 0, seed: DETERMINISTIC_SEED },
+      generationConfig: { responseMimeType: 'application/json', responseSchema: LABEL_SCHEMA, maxOutputTokens: 4096 },
     },
     'Gemini declined to read this photo — try a different shot.',
     (text) => {
@@ -411,7 +594,7 @@ export function analyzeNutritionLabel(apiKey: string, mediaType: string, base64D
         return null;
       }
     },
-    { accuracyCritical: true, thinkingBudget: 256 },
+    { accuracyCritical: true, deterministic: true, effort: 'low', hedgeAfterMs: 14_000 },
   );
 }
 
@@ -429,6 +612,7 @@ export function analyzeFoodPhoto(apiKey: string, mediaType: string, base64Data: 
     withDatabase(SYSTEM_PROMPT, database),
     [{ inline_data: { mime_type: mediaType, data: base64Data } }, { text: 'Analyze this food photo following your protocol.' }],
     'Gemini declined to analyze this photo — try a different shot.',
+    { effort: 'low', hedgeAfterMs: 13_000 },
   );
 }
 
@@ -439,7 +623,8 @@ export function analyzeFoodText(apiKey: string, description: string, database = 
     withDatabase(TEXT_SYSTEM_PROMPT, database),
     [{ text: `What I ate: ${description}` }],
     'Gemini declined to analyze that text — try rephrasing.',
-    384,
+    // Amounts are converted by the app's own table, so typed foods don't need the model to "think" — much faster.
+    { effort: 'none', hedgeAfterMs: 7_000 },
   );
 }
 
@@ -451,14 +636,15 @@ async function generateAnalysis(
   systemPrompt: string,
   userParts: unknown[],
   blockedMessage: string,
-  thinkingBudget = 768,
+  speed: { effort: Effort; hedgeAfterMs: number },
 ): Promise<RawAnalysisResponse> {
   return runWithModels<RawAnalysisResponse>(
     apiKey,
     {
       system_instruction: { parts: [{ text: systemPrompt }] },
       contents: [{ role: 'user', parts: userParts }],
-      generationConfig: { responseMimeType: 'application/json', responseSchema: RESPONSE_SCHEMA, temperature: 0, seed: DETERMINISTIC_SEED },
+      // The cap stops a runaway answer from hanging the scan; a real answer is far shorter.
+      generationConfig: { responseMimeType: 'application/json', responseSchema: RESPONSE_SCHEMA, maxOutputTokens: 6144 },
     },
     blockedMessage,
     (text) => {
@@ -468,7 +654,7 @@ async function generateAnalysis(
         return null;
       }
     },
-    { accuracyCritical: true, thinkingBudget },
+    { accuracyCritical: true, deterministic: true, ...speed },
   );
 }
 
@@ -497,7 +683,7 @@ export async function askWithWebSearch(apiKey: string, systemPrompt: string, use
     system_instruction: { parts: [{ text: systemPrompt }] },
     contents: [{ role: 'user', parts: [{ text: userText }] }],
     ...(withSearch ? { tools: [{ google_search: {} }] } : {}),
-    generationConfig: { temperature: 0.2, maxOutputTokens: 16384 },
+    generationConfig: { maxOutputTokens: 16384 },
   });
   const parse = (text: string, raw: any): GroundedAnswer | null => {
     if (!text.trim()) return null;
@@ -514,6 +700,7 @@ export async function askWithWebSearch(apiKey: string, systemPrompt: string, use
     return await runWithModels<GroundedAnswer>(apiKey, request(true), 'Gemini declined this research request.', parse, {
       accuracyCritical: true,
       timeoutMs: 150_000,
+      temperature: 0.2,
     });
   } catch (err) {
     if (err instanceof GeminiError && (err.kind === 'invalid_key' || err.kind === 'quota' || err.kind === 'network')) throw err;
@@ -521,6 +708,7 @@ export async function askWithWebSearch(apiKey: string, systemPrompt: string, use
     const ans = await runWithModels<GroundedAnswer>(apiKey, request(false), 'Gemini declined this research request.', parse, {
       accuracyCritical: true,
       timeoutMs: 150_000,
+      temperature: 0.2,
     });
     return { ...ans, grounded: false, sources: [] };
   }
@@ -541,27 +729,136 @@ export function chatWithGemini(apiKey: string, systemPrompt: string, history: Ch
     {
       system_instruction: { parts: [{ text: systemPrompt }] },
       contents: turns.map((t) => ({ role: t.role === 'user' ? 'user' : 'model', parts: [{ text: t.text }] })),
-      generationConfig: { temperature: 0.6, maxOutputTokens: 2048 },
+      generationConfig: { maxOutputTokens: 4096 },
     },
     'Gemini declined to answer that — try asking differently.',
     (text) => (text.trim() ? text.trim() : null),
-    { thinkingBudget: 512 },
+    { effort: 'low', temperature: 0.6, hedgeAfterMs: 12_000 },
   );
 }
 
-/**
- * Sends a request to the best available models in order, moving on when one
- * is overloaded, rate-limited, unavailable, or returns something unusable — a
- * different model is a different capacity pool, so one being busy rarely
- * means all are.
- */
-async function runWithModels<T>(
+interface RunOptions {
+  /** Put Pro first in "best accuracy" mode. */
+  accuracyCritical?: boolean;
+  timeoutMs?: number;
+  /** How much the model may think before answering; omitted = no thinking setting sent. */
+  effort?: Effort;
+  /** If the first model hasn't answered by then, also ask the next one and take whichever answers first. */
+  hedgeAfterMs?: number;
+  /** Same input → same answer: fixed seed, and temperature 0 on models that support it well. */
+  deterministic?: boolean;
+  /** Temperature for pre-Gemini-3 models (Gemini 3 keeps its recommended default). */
+  temperature?: number;
+}
+
+type Outcome<T> =
+  | { kind: 'ok'; value: T }
+  | { kind: 'fail'; detail: string; quota?: boolean }
+  | { kind: 'fatal'; error: GeminiError }
+  | { kind: 'aborted' };
+
+/** The request body for one model, with that model's own settings. */
+function bodyFor(model: string, requestBody: unknown, options: RunOptions): string {
+  const rb = requestBody as { generationConfig?: Record<string, unknown> };
+  const gc: Record<string, unknown> = { ...(rb.generationConfig ?? {}) };
+  const modern = isModernModel(model);
+  if (options.deterministic) {
+    gc.seed = DETERMINISTIC_SEED;
+    if (!modern) gc.temperature = 0;
+  } else if (options.temperature !== undefined && !modern) {
+    gc.temperature = options.temperature;
+  }
+  if (options.effort) {
+    const tc = thinkingConfigFor(model, options.effort);
+    if (tc) gc.thinkingConfig = tc;
+  }
+  return JSON.stringify({ ...rb, generationConfig: gc });
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** One model, start to finish (including a retry without an unsupported thinking setting, and one retry on a dropped connection). */
+async function attemptModel<T>(
   apiKey: string,
+  model: string,
   requestBody: unknown,
   blockedMessage: string,
   parse: (text: string, raw: any) => T | null,
-  options: { accuracyCritical?: boolean; timeoutMs?: number; thinkingBudget?: number } = {},
-): Promise<T> {
+  options: RunOptions,
+  signal: AbortSignal,
+): Promise<Outcome<T>> {
+  let networkRetried = false;
+  for (let tries = 0; tries < 4; tries++) {
+    const body = bodyFor(model, requestBody, options);
+    let res: FetchedText;
+    try {
+      res = await fetchText(
+        `${API_BASE}/models/${model}:generateContent`,
+        { method: 'POST', headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey }, body },
+        options.timeoutMs ?? (tierOf(model) === 'pro' ? PRO_TIMEOUT_MS : REQUEST_TIMEOUT_MS),
+        signal,
+      );
+    } catch (err) {
+      if (signal.aborted) return { kind: 'aborted' };
+      const ge = err instanceof GeminiError ? err : new GeminiError('network', "Couldn't reach Gemini — check your internet connection.", String(err));
+      // A timeout on one model shouldn't sink the request — the next model gets a turn.
+      if (/Timed out/.test(ge.detail ?? '')) return { kind: 'fail', detail: `${model}: ${ge.detail}` };
+      // A dropped connection (switching networks, the phone briefly backgrounding the app) — try once more.
+      if (!networkRetried) {
+        networkRetried = true;
+        await sleep(700);
+        if (signal.aborted) return { kind: 'aborted' };
+        continue;
+      }
+      return { kind: 'fatal', error: ge };
+    }
+    if (signal.aborted) return { kind: 'aborted' };
+
+    if (res.ok) {
+      let data: any;
+      try {
+        data = JSON.parse(res.text);
+      } catch {
+        return { kind: 'fail', detail: `${model}: unreadable response` };
+      }
+      if (data?.promptFeedback?.blockReason) {
+        return { kind: 'fatal', error: new GeminiError('blocked', blockedMessage, `blockReason: ${data.promptFeedback.blockReason}`) };
+      }
+      learnVersion(model, data?.modelVersion);
+      const finish = data?.candidates?.[0]?.finishReason ?? 'unknown';
+      const text = extractText(data);
+      if (!text) return { kind: 'fail', detail: `${model}: empty response (finishReason ${finish})` };
+      const parsed = parse(text, data);
+      if (parsed === null) return { kind: 'fail', detail: `${model}: response was not in the expected format (finishReason ${finish})` };
+      lastModelUsed = typeof data?.modelVersion === 'string' && data.modelVersion ? data.modelVersion : model;
+      return { kind: 'ok', value: parsed };
+    }
+
+    const bodyText = res.text;
+    if (isInvalidKeyResponse(res.status, bodyText)) {
+      return {
+        kind: 'fatal',
+        error: new GeminiError('invalid_key', 'Your Gemini API key was rejected — check that it was copied in full.', `${res.status}: ${errorMessageFrom(bodyText)}`),
+      };
+    }
+    if (res.status === 400 && /thinking/i.test(bodyText) && body.includes('thinkingConfig')) {
+      // This model doesn't accept that form of thinking setting — remember it and retry with the other form (or none).
+      const form = body.includes('thinkingLevel') ? 'level' : 'budget';
+      learned = { ...learned, t: { ...learned.t, [model]: { ...learned.t[model], [form]: true } } };
+      saveLearned();
+      continue;
+    }
+    if (res.status === 429) {
+      coolDown(model, bodyText);
+      return { kind: 'fail', detail: `${model}: 429 ${errorMessageFrom(bodyText).slice(0, 160)}`, quota: true };
+    }
+    return { kind: 'fail', detail: `${model}: ${res.status} ${errorMessageFrom(bodyText).slice(0, 160)}` };
+  }
+  return { kind: 'fail', detail: `${model}: gave up after retries` };
+}
+
+/** Models to try, best first: Pro first in "best" mode, the same underlying model only once, quota-limited ones last. */
+async function modelsToTry(apiKey: string, accuracyCritical?: boolean): Promise<string[]> {
   let models: string[];
   try {
     models = await listUsableModels(apiKey);
@@ -569,80 +866,99 @@ async function runWithModels<T>(
     if (err instanceof GeminiError && err.kind === 'invalid_key') throw err;
     models = FALLBACK_MODELS;
   }
-  // Nutrition lookups in "best accuracy" mode try the strongest (Pro) model
-  // first; if it's busy or over its free quota, the loop below falls back to Flash.
-  if (options.accuracyCritical && getAiQuality() === 'best') {
+  if (accuracyCritical && getAiQuality() === 'best') {
     models = [...models.filter((m) => /pro/.test(m)), ...models.filter((m) => !/pro/.test(m))];
   }
+  const seen = new Set<string>();
+  models = models.filter((m) => {
+    const r = resolvedName(m);
+    if (seen.has(r)) return false;
+    seen.add(r);
+    return true;
+  });
+  const now = Date.now();
+  const cooling = (m: string) => (learned.c[m] ?? 0) > now;
+  return [...models.filter((m) => !cooling(m)), ...models.filter(cooling)];
+}
 
+/**
+ * Sends a request to the best available models. If the first one is slow,
+ * a backup request goes to the next model and whichever answers first wins
+ * (the other is cancelled) — so one overloaded model no longer means a long
+ * wait. A model that fails (busy, over quota, unusable answer) hands over to
+ * the next immediately.
+ */
+async function runWithModels<T>(
+  apiKey: string,
+  requestBody: unknown,
+  blockedMessage: string,
+  parse: (text: string, raw: any) => T | null,
+  options: RunOptions = {},
+): Promise<T> {
+  const models = await modelsToTry(apiKey, options.accuracyCritical);
   const failures: string[] = [];
   let sawQuota = false;
 
-  // A small thinking budget keeps answers fast: unlimited "thinking" was most of the wait.
-  const bodyFor = (model: string) => {
-    if (options.thinkingBudget === undefined || noThinkingConfig.has(model)) return JSON.stringify(requestBody);
-    const rb = requestBody as { generationConfig?: Record<string, unknown> };
-    return JSON.stringify({ ...rb, generationConfig: { ...(rb.generationConfig ?? {}), thinkingConfig: { thinkingBudget: options.thinkingBudget } } });
-  };
+  return new Promise<T>((resolve, reject) => {
+    const queue = [...models];
+    const live = new Set<AbortController>();
+    let done = false;
+    let hedgeTimer: ReturnType<typeof setTimeout> | undefined;
 
-  for (let i = 0; i < models.length; i++) {
-    const model = models[i];
-    const body = bodyFor(model);
-    let res: Response;
-    try {
-      res = await fetchWithTimeout(
-        `${API_BASE}/models/${model}:generateContent`,
-        { method: 'POST', headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey }, body },
-        options.timeoutMs ?? (/pro/.test(model) ? PRO_TIMEOUT_MS : REQUEST_TIMEOUT_MS),
+    const finish = (settle: () => void) => {
+      if (done) return;
+      done = true;
+      clearTimeout(hedgeTimer);
+      live.forEach((c) => c.abort());
+      live.clear();
+      settle();
+    };
+
+    const launch = (): boolean => {
+      const model = queue.shift();
+      if (!model) return false;
+      const ctrl = new AbortController();
+      live.add(ctrl);
+      attemptModel(apiKey, model, requestBody, blockedMessage, parse, options, ctrl.signal).then(
+        (o) => {
+          live.delete(ctrl);
+          if (done || o.kind === 'aborted') return;
+          if (o.kind === 'ok') return finish(() => resolve(o.value));
+          if (o.kind === 'fatal') return finish(() => reject(o.error));
+          failures.push(o.detail);
+          if (o.quota) sawQuota = true;
+          if (!launch() && live.size === 0) finish(() => reject(finalError(failures, sawQuota)));
+        },
+        (err) => {
+          live.delete(ctrl);
+          finish(() => reject(err instanceof GeminiError ? err : new GeminiError('unknown', "Gemini couldn't analyze that right now.", String(err))));
+        },
       );
-    } catch (err) {
-      // A timeout on one model shouldn't sink the request — try the next one.
-      if (err instanceof GeminiError && err.kind === 'network' && /Timed out/.test(err.detail ?? '')) {
-        failures.push(`${model}: ${err.detail}`);
-        continue;
-      }
-      throw err;
-    }
+      return true;
+    };
 
-    if (res.ok) {
-      const data = await res.json();
-      if (data?.promptFeedback?.blockReason) {
-        throw new GeminiError('blocked', blockedMessage, `blockReason: ${data.promptFeedback.blockReason}`);
-      }
-      const text = extractText(data);
-      if (!text) {
-        failures.push(`${model}: empty response (finishReason ${data?.candidates?.[0]?.finishReason ?? 'unknown'})`);
-        continue;
-      }
-      const parsed = parse(text, data);
-      if (parsed === null) {
-        failures.push(`${model}: response was not in the expected format`);
-        continue;
-      }
-      lastModelUsed = model;
-      return parsed;
+    launch();
+    if (options.hedgeAfterMs && queue.length > 0) {
+      hedgeTimer = setTimeout(() => {
+        if (!done && live.size === 1) launch();
+      }, options.hedgeAfterMs);
     }
+  });
+}
 
-    const bodyText = await res.text();
-    if (isInvalidKeyResponse(res.status, bodyText)) {
-      throw new GeminiError('invalid_key', 'Your Gemini API key was rejected — check that it was copied in full.', `${res.status}: ${errorMessageFrom(bodyText)}`);
-    }
-    if (res.status === 400 && /thinking/i.test(bodyText) && body.includes('thinkingConfig') && !noThinkingConfig.has(model)) {
-      // This model doesn't accept the thinking setting — retry it once without.
-      noThinkingConfig.add(model);
-      i--;
-      continue;
-    }
-    if (res.status === 429) sawQuota = true;
-    failures.push(`${model}: ${res.status} ${errorMessageFrom(bodyText).slice(0, 160)}`);
-  }
-
+function finalError(failures: string[], sawQuota: boolean): GeminiError {
   const detail = failures.join(' | ');
-  if (sawQuota) {
-    throw new GeminiError('quota', "You've hit Gemini's free usage limit for now — wait a minute (or until tomorrow for the daily limit) and try again.", detail);
+  if (sawQuota && failures.every((f) => /: 429 /.test(f) || /: 5\d\d /.test(f))) {
+    return new GeminiError('quota', "You've hit Gemini's free usage limit for now — wait a minute (or until tomorrow for the daily limit) and try again.", detail);
   }
   if (failures.some((f) => /: 5\d\d /.test(f))) {
-    throw new GeminiError('overloaded', "Gemini's servers are busy right now — try again in a minute.", detail);
+    return new GeminiError('overloaded', "Gemini's servers are busy right now — try again in a minute.", detail);
   }
-  throw new GeminiError('bad_response', "Gemini couldn't analyze that right now.", detail);
+  if (sawQuota) {
+    return new GeminiError('quota', "You've hit Gemini's free usage limit for now — wait a minute (or until tomorrow for the daily limit) and try again.", detail);
+  }
+  if (failures.some((f) => /Timed out/.test(f))) {
+    return new GeminiError('network', 'Gemini took too long to answer — try again.', detail);
+  }
+  return new GeminiError('bad_response', "Gemini couldn't analyze that right now.", detail);
 }

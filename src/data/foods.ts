@@ -40,6 +40,11 @@ function f(
   };
 }
 
+/** Adds a per-unit option (e.g. "1 egg (60g)") so counts like "2-egg omelette" convert to grams. */
+function withPiece(food: FoodItem, label: string, grams: number): FoodItem {
+  return { ...food, servingOptions: [...food.servingOptions, serving(label, 'piece', grams)] };
+}
+
 /**
  * Curated demo food database. Values approximate USDA FoodData Central
  * averages per 100g/100ml. In a production build this module is replaced by
@@ -450,7 +455,8 @@ export const FOODS: FoodItem[] = [
     f('oats-dry', 'Rolled Oats (dry)', 'שיבולת שועל', 'Grains', '🥣', [389, 16.9, 66.3, 6.9, 10.6, 0, 2], ['1/2 cup (40g)', 'serving', 40], 88, ['Whole grain, rolled only']),
     f('egg-white', 'Egg White', 'חלבון ביצה', 'Protein', '🥚', [52, 10.9, 0.7, 0.2, 0, 0.7, 166], ['1 large egg white (33g)', 'piece', 33], 85, ['Part of a whole food']),
     f('egg-fried', 'Fried Egg', 'ביצת עין', 'Protein', '🍳', [196, 13.6, 0.8, 14.8, 0, 0.4, 207], ['1 large egg (46g)', 'piece', 46], 78, ['Whole food cooked in fat']),
-    f('egg-scrambled', 'Scrambled Eggs', 'חביתה מקושקשת', 'Protein', '🍳', [149, 10, 1.6, 11, 0, 1.4, 145], ['2 eggs (120g)', 'serving', 120], 78, ['Whole food cooked with fat/milk']),
+    withPiece(f('egg-scrambled', 'Scrambled Eggs', 'ביצים מקושקשות', 'Protein', '🍳', [149, 10, 1.6, 11, 0, 1.4, 145], ['2 eggs (120g)', 'serving', 120], 78, ['Whole food cooked with fat/milk']), '1 egg (60g)', 60),
+    withPiece(f('omelette', 'Omelette (plain)', 'חביתה', 'Protein', '🍳', [154, 10.6, 0.6, 11.7, 0, 0.3, 155], ['2-egg omelette (120g)', 'serving', 120], 78, ['Whole food cooked with a little fat']), '1 egg (60g)', 60),
     f('chicken-thigh', 'Chicken Thigh (skinless, roasted)', 'פרגית', 'Protein', '🍗', [209, 26, 0, 10.9, 0, 0, 95], ['1 thigh (100g)', 'piece', 100], 88, ['Single-ingredient food']),
     f('tuna-water', 'Tuna (canned in water, drained)', 'טונה במים', 'Protein', '🐟', [116, 25.5, 0, 0.8, 0, 0, 338], ['1 can drained (110g)', 'serving', 110], 75, ['Canned single-ingredient fish', 'Added salt']),
     f('shrimp', 'Shrimp (cooked)', 'שרימפס', 'Protein', '🦐', [99, 24, 0.2, 0.3, 0, 0, 111], ['1 serving (85g)', 'serving', 85], 85, ['Single-ingredient food']),

@@ -112,6 +112,8 @@ export interface FoodItem {
   dataQuality: DataQuality;
   source: string; // e.g. "USDA FoodData Central", "AI Vision Estimate"
   naturalness: NaturalnessInfo;
+  /** Household-measure class (see data/portions.ts) so "2 tbsp" converts to grams; set on AI-learned foods. */
+  measureClass?: import('@/data/portions').MeasureClass;
 }
 
 export interface RestaurantDish {
@@ -259,6 +261,10 @@ export interface ScannedFoodCandidate {
   /** Set when this food is naturally counted rather than weighed (e.g. "2 eggs", "3 slices"). */
   unitCount?: number;
   unitLabel?: string;
+  /** Grams in one unit (egg, tbsp, slice) when the amount was derived from a count — lets the user change the count instead of grams. */
+  unitGrams?: number;
+  /** How the amount was worked out, e.g. "1 egg × 60 g (standard)". */
+  amountNote?: string;
   estimatedGrams: number;
   /** The min/max range behind estimatedGrams (its midpoint), when the source was a real estimate rather than a fixed serving. */
   estimatedGramsRange?: [number, number];

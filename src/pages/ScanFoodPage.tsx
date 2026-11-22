@@ -18,6 +18,7 @@ import { AddDetailsPanel } from '@/components/food/AddDetailsPanel';
 import { ScanCoachOpinion } from '@/components/food/ScanCoachOpinion';
 import { calculateNutrition, sumNutrition } from '@/utils/nutritionCalculator';
 import { findFoodById } from '@/data/foods';
+import { pluralizeUnit } from '@/utils/units';
 import type { FoodAlternative, FoodItem, HiddenIngredientEntry, MealType, NutritionFacts, ScanResult, ScannedFoodCandidate } from '@/types';
 
 type ScanStage = 'capture' | 'analyzing' | 'review' | 'error';
@@ -27,6 +28,11 @@ const CONFIDENCE_LABEL: Record<ScannedFoodCandidate['confidence'], { label: stri
   medium: { label: 'Medium confidence', className: 'bg-amber-50 text-amber-700' },
   low: { label: 'Not sure', className: 'bg-orange-50 text-orange-700' },
 };
+
+/** Spoons and cups can be halved ("½ cup"); eggs, slices and pieces step by one. */
+function unitStep(label: string | undefined): number {
+  return label && /^(tbsp|tsp|cups?|handfuls?)$/.test(label) ? 0.5 : 1;
+}
 
 export function ScanFoodPage() {
   const { date, meal: mealFromUrl, queryString } = useAddContext();
@@ -153,7 +159,29 @@ export function ScanFoodPage() {
   }
 
   function updateCandidateGrams(id: string, grams: number) {
-    setCandidates((prev) => prev.map((c) => (c.id === id ? recomputeCandidate(c, grams, c.addedDetails ?? []) : c)));
+    setCandidates((prev) =>
+      prev.map((c) => {
+        if (c.id !== id) return c;
+        const next = recomputeCandidate(c, grams, c.addedDetails ?? []);
+        // Keep the unit count in step with a manual gram change (1 egg = 60 g → 120 g shows 2 eggs).
+        if (c.unitGrams && c.unitCount) {
+          const count = Math.round((grams / c.unitGrams) * 10) / 10;
+          return { ...next, unitCount: count > 0 ? count : c.unitCount, unitLabel: pluralizeUnit(c.unitLabel, count), amountNote: undefined };
+        }
+        return next;
+      }),
+    );
+  }
+
+  /** The user changed the count ("2 eggs" → "1 egg"): grams follow from the weight per unit. */
+  function updateCandidateUnits(id: string, count: number) {
+    setCandidates((prev) =>
+      prev.map((c) => {
+        if (c.id !== id || !c.unitGrams) return c;
+        const grams = Math.max(1, Math.round(count * c.unitGrams));
+        return { ...recomputeCandidate(c, grams, c.addedDetails ?? []), unitCount: count, unitLabel: pluralizeUnit(c.unitLabel, count), amountNote: undefined };
+      }),
+    );
   }
 
   function addHiddenIngredient(id: string, entry: HiddenIngredientEntry) {
@@ -249,8 +277,12 @@ export function ScanFoodPage() {
       const quantityLabel = isLabel
         ? `${c.estimatedGrams}g`
         : c.unitCount && c.unitLabel
-          ? `~${c.unitCount} ${c.unitLabel} (estimated)`
-          : `~${c.estimatedGrams}g (estimated)`;
+          ? isText
+            ? `${c.unitCount} ${c.unitLabel} (${c.estimatedGrams}g)`
+            : `~${c.unitCount} ${c.unitLabel} (estimated)`
+          : isText
+            ? `${c.estimatedGrams}g`
+            : `~${c.estimatedGrams}g (estimated)`;
       addDiaryEntry({
         date,
         mealType,
@@ -385,6 +417,7 @@ export function ScanFoodPage() {
           <div className="flex items-center justify-between gap-3 px-4 py-3">
             <p className="text-sm text-muted">
               {isLabel ? 'Reading the label' : 'Analyzing your meal'}… <span className="tabular-nums">{elapsed}s</span>
+              {elapsed >= 14 && <span className="block text-[11px]">Slower than usual — a backup model is answering too</span>}
             </p>
             <button onClick={cancelAnalysis} className="text-sm font-semibold text-muted hover:text-fg">
               Cancel
@@ -399,6 +432,7 @@ export function ScanFoodPage() {
           <p className="font-semibold text-fg">Looking up your foods…</p>
           <p className="text-xs text-muted">
             Finding the nutrition values for what you typed · <span className="tabular-nums">{elapsed}s</span>
+            {elapsed >= 8 && <span className="block">Slower than usual — a backup model is answering too</span>}
           </p>
           <button onClick={cancelAnalysis} className="text-sm font-semibold text-muted hover:text-fg">
             Cancel
@@ -615,9 +649,20 @@ export function ScanFoodPage() {
                     <div className="mt-3">
                       <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted">
                         {isText || isLabel ? '📏 How much you ate' : '📏 Our estimate'}{c.estimatedGramsRange ? ` (~${c.estimatedGramsRange[0]}–${c.estimatedGramsRange[1]}g)` : ''}
-                        {c.unitCount && c.unitLabel ? ` · ~${c.unitCount} ${c.unitLabel}` : ''}
+                        {c.unitCount && c.unitLabel ? ` · ${isText || isLabel ? '' : '~'}${c.unitCount} ${c.unitLabel}` : ''}
                       </p>
-                      <div className="flex items-center justify-center rounded-xl bg-surface-alt py-3">
+                      {c.amountNote && <p className="mb-1.5 text-[11px] text-muted">{c.amountNote}</p>}
+                      <div className="flex flex-col items-center justify-center gap-2 rounded-xl bg-surface-alt py-3">
+                        {c.unitGrams && c.unitCount ? (
+                          <QuantityStepper
+                            value={c.unitCount}
+                            step={unitStep(c.unitLabel)}
+                            min={unitStep(c.unitLabel)}
+                            max={50}
+                            suffix={c.unitLabel ?? 'pcs'}
+                            onChange={(n) => updateCandidateUnits(c.id, n)}
+                          />
+                        ) : null}
                         <QuantityStepper value={c.estimatedGrams} onChange={(g) => updateCandidateGrams(c.id, g)} />
                       </div>
                     </div>
