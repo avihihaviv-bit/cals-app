@@ -2,6 +2,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useEffect, useRef, useState } from 'react';
 import { Camera, Check, ImagePlus, KeyRound, Loader2, NotebookPen, PencilLine, RotateCcw, ScanLine, Search, SlidersHorizontal, Tag, X } from 'lucide-react';
 import { getGeminiKey } from '@/utils/geminiKey';
+import { markUpdateBusy } from '@/hooks/useAutoUpdate';
 import { foodRecognitionService, IDENTIFICATION_CONFIDENCE_THRESHOLD } from '@/services/FoodRecognitionService';
 import { foodSearchService } from '@/services/FoodSearchService';
 import { useAppStore } from '@/store/useAppStore';
@@ -75,26 +76,51 @@ export function ScanFoodPage() {
     reader.readAsDataURL(file);
   }
 
-  async function runLabel(dataUrl: string) {
-    setLabelMode(true);
+  // Each analysis gets an id; "Cancel" (or starting another) makes a late answer be ignored.
+  const runIdRef = useRef(0);
+  const [analyzeStartedAt, setAnalyzeStartedAt] = useState(0);
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (stage !== 'analyzing') return;
+    setElapsed(0);
+    const t = window.setInterval(() => setElapsed(Math.floor((Date.now() - analyzeStartedAt) / 1000)), 500);
+    return () => window.clearInterval(t);
+  }, [stage, analyzeStartedAt]);
+
+  async function track(run: () => Promise<ScanResult>) {
+    const id = ++runIdRef.current;
+    setAnalyzeStartedAt(Date.now());
     setStage('analyzing');
     try {
-      applyResult(await foodRecognitionService.recognizeLabel(dataUrl));
+      const result = await run();
+      if (id === runIdRef.current) applyResult(result);
     } catch {
+      if (id !== runIdRef.current) return;
       setScan(null);
       setStage('error');
     }
   }
 
-  async function runTextLookup(text: string) {
+  // Don't let an automatic update reload the app while a scan is running or waiting to be added.
+  useEffect(() => {
+    if (stage !== 'analyzing' && stage !== 'review') return;
+    markUpdateBusy(true);
+    return () => markUpdateBusy(false);
+  }, [stage]);
+
+  function cancelAnalysis() {
+    runIdRef.current++;
+    retake();
+  }
+
+  async function runLabel(dataUrl: string, fresh = false) {
+    setLabelMode(true);
+    await track(() => foodRecognitionService.recognizeLabel(dataUrl, { fresh }));
+  }
+
+  async function runTextLookup(text: string, fresh = false) {
     setImageDataUrl(null);
-    setStage('analyzing');
-    try {
-      applyResult(await foodRecognitionService.recognizeText(text));
-    } catch {
-      setScan(null);
-      setStage('error');
-    }
+    await track(() => foodRecognitionService.recognizeText(text, { fresh }));
   }
 
   function applyResult(result: ScanResult) {
@@ -108,23 +134,16 @@ export function ScanFoodPage() {
     }
   }
 
-  async function runRecognition(dataUrl: string) {
+  async function runRecognition(dataUrl: string, fresh = false) {
     setLabelMode(false);
-    setStage('analyzing');
-    try {
-      const result = await foodRecognitionService.recognize(dataUrl);
-      setScan(result);
-      if (result.recognitionAvailable && result.candidates.length > 0) {
-        setCandidates(result.candidates);
-        setStage('review');
-      } else {
-        setCandidates([]);
-        setStage('error');
-      }
-    } catch {
-      setScan(null);
-      setStage('error');
-    }
+    await track(() => foodRecognitionService.recognize(dataUrl, { fresh }));
+  }
+
+  function analyzeAgainFresh() {
+    if (!scan) return;
+    if (scan.inputKind === 'text') runTextLookup(typedText, true);
+    else if (imageDataUrl && scan.inputKind === 'label') runLabel(imageDataUrl, true);
+    else if (imageDataUrl) runRecognition(imageDataUrl, true);
   }
 
   function recomputeCandidate(c: ScannedFoodCandidate, grams: number, addedDetails: HiddenIngredientEntry[]): ScannedFoodCandidate {
@@ -363,6 +382,14 @@ export function ScanFoodPage() {
             <div className="absolute inset-0 bg-black/35" />
             <ScanAnimation />
           </div>
+          <div className="flex items-center justify-between gap-3 px-4 py-3">
+            <p className="text-sm text-muted">
+              {isLabel ? 'Reading the label' : 'Analyzing your meal'}… <span className="tabular-nums">{elapsed}s</span>
+            </p>
+            <button onClick={cancelAnalysis} className="text-sm font-semibold text-muted hover:text-fg">
+              Cancel
+            </button>
+          </div>
         </div>
       )}
 
@@ -370,7 +397,12 @@ export function ScanFoodPage() {
         <div className="flex flex-col items-center gap-3 rounded-xl2 bg-surface p-10 text-center shadow-card">
           <Loader2 size={30} className="animate-spin text-primary-600" />
           <p className="font-semibold text-fg">Looking up your foods…</p>
-          <p className="text-xs text-muted">Finding the nutrition values for what you typed.</p>
+          <p className="text-xs text-muted">
+            Finding the nutrition values for what you typed · <span className="tabular-nums">{elapsed}s</span>
+          </p>
+          <button onClick={cancelAnalysis} className="text-sm font-semibold text-muted hover:text-fg">
+            Cancel
+          </button>
         </div>
       )}
 
@@ -438,6 +470,22 @@ export function ScanFoodPage() {
                     ),
                 )}
               </div>
+            </div>
+          )}
+
+          {scan.resultSource === 'local' && (
+            <div className="flex items-center gap-2 rounded-xl bg-primary-50 px-4 py-2.5 text-xs font-medium text-primary-800">
+              <span aria-hidden>⚡</span> Instant — exact match in the built-in food list (verified values, no AI needed).
+            </div>
+          )}
+          {scan.resultSource === 'cache' && (
+            <div className="flex items-center justify-between gap-2 rounded-xl bg-primary-50 px-4 py-2.5 text-xs font-medium text-primary-800">
+              <span>
+                <span aria-hidden>⚡</span> Same answer as last time — {isText ? 'you typed this before' : 'this exact photo was analyzed before'}.
+              </span>
+              <button onClick={analyzeAgainFresh} className="shrink-0 font-semibold underline">
+                Analyze again
+              </button>
             </div>
           )}
 

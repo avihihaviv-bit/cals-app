@@ -302,6 +302,8 @@ export interface ScanResult {
   inputKind?: 'photo' | 'text' | 'label';
   /** Which Gemini model produced this result (shown for transparency). */
   modelUsed?: string;
+  /** 'local' = answered instantly from the built-in list; 'cache' = the same input was analyzed before; 'ai' = fresh AI answer. */
+  resultSource?: 'ai' | 'cache' | 'local';
   /** Present when recognitionAvailable is false, to explain why (e.g. "photo too blurry to identify anything"). */
   unavailableReason?: string;
   /** Raw technical detail behind unavailableReason (HTTP status / provider message), shown small so failures are diagnosable without server logs. */

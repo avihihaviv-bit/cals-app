@@ -170,6 +170,10 @@ Respond with ONLY the JSON object matching the schema.`;
 
 let cachedModels: { key: string; models: string[] } | null = null;
 let lastModelUsed: string | null = null;
+/** Fixed seed + temperature 0: the same input gets the same answer as far as the API allows. */
+const DETERMINISTIC_SEED = 7;
+/** Models that rejected a thinking budget — they're sent requests without one. */
+const noThinkingConfig = new Set<string>();
 
 /** The model that produced the most recent successful answer (shown for transparency). */
 export function getLastModelUsed(): string | null {
@@ -232,8 +236,43 @@ function isInvalidKeyResponse(status: number, bodyText: string): boolean {
 }
 
 /** Lists the Gemini models this key can use for image+text generation, best first. Also serves as the key check. */
-export async function listUsableModels(apiKey: string): Promise<string[]> {
-  if (cachedModels?.key === apiKey) return cachedModels.models;
+const MODELS_STORAGE_KEY = 'nutrition-ai-gemini-models';
+const MODELS_TTL_MS = 24 * 60 * 60 * 1000;
+
+function keyFingerprint(apiKey: string): string {
+  let h = 5381;
+  for (let i = 0; i < apiKey.length; i++) h = ((h << 5) + h + apiKey.charCodeAt(i)) >>> 0;
+  return h.toString(36);
+}
+
+/** The model list is remembered on the device for a day, so a scan doesn't wait for an extra request on every app launch. */
+function readStoredModels(apiKey: string): string[] | null {
+  try {
+    const raw = JSON.parse(localStorage.getItem(MODELS_STORAGE_KEY) ?? 'null');
+    if (raw && raw.k === keyFingerprint(apiKey) && Date.now() - raw.t < MODELS_TTL_MS && Array.isArray(raw.m) && raw.m.length) return raw.m;
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+function storeModels(apiKey: string, models: string[]) {
+  try {
+    localStorage.setItem(MODELS_STORAGE_KEY, JSON.stringify({ k: keyFingerprint(apiKey), t: Date.now(), m: models }));
+  } catch {
+    /* ignore */
+  }
+}
+
+export async function listUsableModels(apiKey: string, opts: { fresh?: boolean } = {}): Promise<string[]> {
+  if (!opts.fresh) {
+    if (cachedModels?.key === apiKey) return cachedModels.models;
+    const stored = readStoredModels(apiKey);
+    if (stored) {
+      cachedModels = { key: apiKey, models: stored };
+      return stored;
+    }
+  }
 
   const res = await fetchWithTimeout(`${API_BASE}/models?pageSize=200`, {
     headers: { 'x-goog-api-key': apiKey },
@@ -263,6 +302,7 @@ export async function listUsableModels(apiKey: string): Promise<string[]> {
 
   const models = usable.length > 0 ? usable : FALLBACK_MODELS;
   cachedModels = { key: apiKey, models };
+  if (usable.length > 0) storeModels(apiKey, models);
   return models;
 }
 
@@ -361,7 +401,7 @@ export function analyzeNutritionLabel(apiKey: string, mediaType: string, base64D
       contents: [
         { role: 'user', parts: [{ inline_data: { mime_type: mediaType, data: base64Data } }, { text: 'Read this nutrition label.' }] },
       ],
-      generationConfig: { responseMimeType: 'application/json', responseSchema: LABEL_SCHEMA, temperature: 0 },
+      generationConfig: { responseMimeType: 'application/json', responseSchema: LABEL_SCHEMA, temperature: 0, seed: DETERMINISTIC_SEED },
     },
     'Gemini declined to read this photo — try a different shot.',
     (text) => {
@@ -371,7 +411,7 @@ export function analyzeNutritionLabel(apiKey: string, mediaType: string, base64D
         return null;
       }
     },
-    { accuracyCritical: true },
+    { accuracyCritical: true, thinkingBudget: 256 },
   );
 }
 
@@ -399,6 +439,7 @@ export function analyzeFoodText(apiKey: string, description: string, database = 
     withDatabase(TEXT_SYSTEM_PROMPT, database),
     [{ text: `What I ate: ${description}` }],
     'Gemini declined to analyze that text — try rephrasing.',
+    384,
   );
 }
 
@@ -410,13 +451,14 @@ async function generateAnalysis(
   systemPrompt: string,
   userParts: unknown[],
   blockedMessage: string,
+  thinkingBudget = 768,
 ): Promise<RawAnalysisResponse> {
   return runWithModels<RawAnalysisResponse>(
     apiKey,
     {
       system_instruction: { parts: [{ text: systemPrompt }] },
       contents: [{ role: 'user', parts: userParts }],
-      generationConfig: { responseMimeType: 'application/json', responseSchema: RESPONSE_SCHEMA, temperature: 0.2 },
+      generationConfig: { responseMimeType: 'application/json', responseSchema: RESPONSE_SCHEMA, temperature: 0, seed: DETERMINISTIC_SEED },
     },
     blockedMessage,
     (text) => {
@@ -426,7 +468,7 @@ async function generateAnalysis(
         return null;
       }
     },
-    { accuracyCritical: true },
+    { accuracyCritical: true, thinkingBudget },
   );
 }
 
@@ -503,6 +545,7 @@ export function chatWithGemini(apiKey: string, systemPrompt: string, history: Ch
     },
     'Gemini declined to answer that — try asking differently.',
     (text) => (text.trim() ? text.trim() : null),
+    { thinkingBudget: 512 },
   );
 }
 
@@ -517,7 +560,7 @@ async function runWithModels<T>(
   requestBody: unknown,
   blockedMessage: string,
   parse: (text: string, raw: any) => T | null,
-  options: { accuracyCritical?: boolean; timeoutMs?: number } = {},
+  options: { accuracyCritical?: boolean; timeoutMs?: number; thinkingBudget?: number } = {},
 ): Promise<T> {
   let models: string[];
   try {
@@ -532,11 +575,19 @@ async function runWithModels<T>(
     models = [...models.filter((m) => /pro/.test(m)), ...models.filter((m) => !/pro/.test(m))];
   }
 
-  const body = JSON.stringify(requestBody);
   const failures: string[] = [];
   let sawQuota = false;
 
-  for (const model of models) {
+  // A small thinking budget keeps answers fast: unlimited "thinking" was most of the wait.
+  const bodyFor = (model: string) => {
+    if (options.thinkingBudget === undefined || noThinkingConfig.has(model)) return JSON.stringify(requestBody);
+    const rb = requestBody as { generationConfig?: Record<string, unknown> };
+    return JSON.stringify({ ...rb, generationConfig: { ...(rb.generationConfig ?? {}), thinkingConfig: { thinkingBudget: options.thinkingBudget } } });
+  };
+
+  for (let i = 0; i < models.length; i++) {
+    const model = models[i];
+    const body = bodyFor(model);
     let res: Response;
     try {
       res = await fetchWithTimeout(
@@ -575,6 +626,12 @@ async function runWithModels<T>(
     const bodyText = await res.text();
     if (isInvalidKeyResponse(res.status, bodyText)) {
       throw new GeminiError('invalid_key', 'Your Gemini API key was rejected — check that it was copied in full.', `${res.status}: ${errorMessageFrom(bodyText)}`);
+    }
+    if (res.status === 400 && /thinking/i.test(bodyText) && body.includes('thinkingConfig') && !noThinkingConfig.has(model)) {
+      // This model doesn't accept the thinking setting — retry it once without.
+      noThinkingConfig.add(model);
+      i--;
+      continue;
     }
     if (res.status === 429) sawQuota = true;
     failures.push(`${model}: ${res.status} ${errorMessageFrom(bodyText).slice(0, 160)}`);

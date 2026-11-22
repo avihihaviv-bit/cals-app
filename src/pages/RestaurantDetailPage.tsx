@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { ChevronRight, ExternalLink, KeyRound, MapPin, Plus, Search, ShieldCheck, Trash2 } from 'lucide-react';
@@ -7,6 +7,7 @@ import { researchRestaurant, ResearchError, menuDishNames } from '@/services/res
 import { normalizeText } from '@/services/restaurantSearch';
 import { useAddContext } from '@/hooks/useAddContext';
 import { useAppStore } from '@/store/useAppStore';
+import { markUpdateBusy } from '@/hooks/useAutoUpdate';
 import { Button } from '@/components/ui/Button';
 import { Chip } from '@/components/ui/Chip';
 import { EmptyState } from '@/components/ui/EmptyState';
@@ -42,6 +43,12 @@ export function RestaurantDetailPage() {
     params.get('researched') ? { status: 'done', message: 'המחקר הושלם ונשמר במאגר — בפעם הבאה הוא כבר כאן.' } : { status: 'idle' },
   );
 
+  const researchRunning = research.status === 'running';
+  useEffect(() => {
+    if (!researchRunning) return;
+    markUpdateBusy(true);
+    return () => markUpdateBusy(false);
+  }, [researchRunning]);
   const categories = useMemo(() => [...new Set(dishes.map((d) => d.menuCategory || 'מנות'))], [dishes]);
   const visible = dishes.filter((d) => {
     if (category && (d.menuCategory || 'מנות') !== category) return false;

@@ -14,7 +14,6 @@ export interface FoodSearchService {
   getById(id: string): Promise<FoodItem | undefined>;
 }
 
-const NETWORK_DELAY_MS = 260;
 
 function normalize(text: string): string {
   return text.trim().toLowerCase();
@@ -22,7 +21,6 @@ function normalize(text: string): string {
 
 class MockFoodSearchService implements FoodSearchService {
   async search({ text, limit = 20 }: FoodSearchQuery): Promise<FoodItem[]> {
-    await delay(NETWORK_DELAY_MS);
     const q = normalize(text);
     if (!q) return [];
     const matches = (f: FoodItem) =>
@@ -33,13 +31,9 @@ class MockFoodSearchService implements FoodSearchService {
   }
 
   async getById(id: string): Promise<FoodItem | undefined> {
-    await delay(80);
     return findFoodById(id);
   }
 }
 
-function delay(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 export const foodSearchService: FoodSearchService = new MockFoodSearchService();

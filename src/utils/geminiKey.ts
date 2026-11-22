@@ -31,12 +31,12 @@ export function maskGeminiKey(key: string): string {
 const QUALITY_KEY = 'nutrition-ai-gemini-quality';
 export type AiQuality = 'best' | 'fast';
 
-/** "best" (default) tries Gemini Pro first for nutrition lookups; "fast" uses Flash only. */
+/** "fast" (default) uses Flash; "best" tries Gemini Pro first — noticeably slower. */
 export function getAiQuality(): AiQuality {
   try {
-    return localStorage.getItem(QUALITY_KEY) === 'fast' ? 'fast' : 'best';
+    return localStorage.getItem(QUALITY_KEY) === 'best' ? 'best' : 'fast';
   } catch {
-    return 'best';
+    return 'fast';
   }
 }
 

@@ -8,6 +8,7 @@ import { researchRestaurant, ResearchError } from '@/services/restaurantResearch
 import { useAddContext } from '@/hooks/useAddContext';
 import { useDebounce } from '@/hooks/useDebounce';
 import { useAppStore } from '@/store/useAppStore';
+import { markUpdateBusy } from '@/hooks/useAutoUpdate';
 import { getGeminiKey } from '@/utils/geminiKey';
 import { Button } from '@/components/ui/Button';
 import { ErrorState } from '@/components/ui/ErrorState';
@@ -29,6 +30,13 @@ export function RestaurantsPage() {
   const [toast, setToast] = useState<string | null>(null);
   const [research, setResearch] = useState<{ status: 'idle' } | { status: 'running'; label: string } | { status: 'error'; error: ResearchError; retry: () => void }>({ status: 'idle' });
   const researched = useAppStore((s) => s.researchedRestaurants);
+  const researchRunning = research.status === 'running';
+  useEffect(() => {
+    if (!researchRunning) return;
+    markUpdateBusy(true);
+    return () => markUpdateBusy(false);
+  }, [researchRunning]);
+
   const inputRef = useRef<HTMLInputElement>(null);
   const hasKey = !!getGeminiKey();
 

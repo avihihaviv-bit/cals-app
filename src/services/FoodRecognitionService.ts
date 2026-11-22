@@ -1,7 +1,9 @@
 import { FOODS, findFoodById } from '@/data/foods';
 import { calculateNutrition } from '@/utils/nutritionCalculator';
 import { generateId } from '@/utils/id';
-import { getGeminiKey } from '@/utils/geminiKey';
+import { getAiQuality, getGeminiKey } from '@/utils/geminiKey';
+import { cacheGet, cacheSet, fingerprint } from '@/utils/resultCache';
+import { lookupLocally } from '@/utils/localTextLookup';
 import { downscaleImage } from '@/utils/resizeImage';
 import {
   analyzeFoodPhoto,
@@ -16,10 +18,25 @@ import {
 import { useAppStore } from '@/store/useAppStore';
 import type { FoodItem, NaturalnessInfo, NutritionFacts, ScanResult, ScannedFoodCandidate, ServingOption } from '@/types';
 
+export interface RecognizeOptions {
+  /** Skip remembered answers and ask the AI again. */
+  fresh?: boolean;
+}
+
 export interface FoodRecognitionServiceInterface {
-  recognize(imageDataUrl: string): Promise<ScanResult>;
-  recognizeText(description: string): Promise<ScanResult>;
-  recognizeLabel(imageDataUrl: string): Promise<ScanResult>;
+  recognize(imageDataUrl: string, opts?: RecognizeOptions): Promise<ScanResult>;
+  recognizeText(description: string, opts?: RecognizeOptions): Promise<ScanResult>;
+  recognizeLabel(imageDataUrl: string, opts?: RecognizeOptions): Promise<ScanResult>;
+}
+
+/** Bump when prompts change, so remembered answers from older prompts aren't reused. */
+const PROMPT_VERSION = 4;
+const cacheKey = (kind: string, content: string) => `${kind}:v${PROMPT_VERSION}:${getAiQuality()}:${fingerprint(content)}`;
+
+/** Rounds an estimated weight so tiny model-to-model wobble (183 g vs 187 g) doesn't show up as a different answer. */
+function roundGrams(g: number): number {
+  if (g < 50) return Math.max(1, Math.round(g / 5) * 5);
+  return Math.round(g / 10) * 10;
 }
 
 /** Below this identification confidence, the UI must show alternatives instead of asserting the name as fact. */
@@ -122,9 +139,13 @@ function buildCandidate(item: RawAnalysisItem): ScannedFoodCandidate {
         fatG: SAFE_NUM(item.per100gFatG),
       });
 
-  const min = item.estimatedGramsMin ?? item.estimatedGramsMax ?? 100;
-  const max = item.estimatedGramsMax ?? item.estimatedGramsMin ?? 100;
-  const grams = Math.round((min + max) / 2);
+  const rawMin = item.estimatedGramsMin ?? item.estimatedGramsMax ?? 100;
+  const rawMax = item.estimatedGramsMax ?? item.estimatedGramsMin ?? 100;
+  // An exact amount (the user typed "150g") or a counted one (2 eggs) is kept as is; an estimated range is rounded.
+  const exact = rawMin === rawMax || !!item.isCountable;
+  const min = exact ? rawMin : roundGrams(rawMin);
+  const max = exact ? rawMax : roundGrams(rawMax);
+  const grams = exact ? Math.round((rawMin + rawMax) / 2) : roundGrams((rawMin + rawMax) / 2);
 
   const confidence = Math.max(0, Math.min(100, Math.round(item.identificationConfidence ?? 0)));
   const identificationCertain = confidence >= IDENTIFICATION_CONFIDENCE_THRESHOLD;
@@ -207,7 +228,7 @@ async function analyzeViaWorker(imageDataUrl: string): Promise<RawAnalysisRespon
  * recognitionAvailable: false with the real reason, never invented foods.
  */
 class RealFoodRecognitionService implements FoodRecognitionServiceInterface {
-  async recognize(originalDataUrl: string): Promise<ScanResult> {
+  async recognize(originalDataUrl: string, opts: RecognizeOptions = {}): Promise<ScanResult> {
     const imageDataUrl = await downscaleImage(originalDataUrl);
     const match = imageDataUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
     if (!match) {
@@ -217,9 +238,16 @@ class RealFoodRecognitionService implements FoodRecognitionServiceInterface {
 
     let data: RawAnalysisResponse;
     const apiKey = getGeminiKey();
-    if (apiKey) {
+    const key = cacheKey('photo', base64Data);
+    const remembered = opts.fresh ? undefined : cacheGet<RawAnalysisResponse>(key);
+    let resultSource: ScanResult['resultSource'] = 'ai';
+    if (remembered) {
+      data = remembered;
+      resultSource = 'cache';
+    } else if (apiKey) {
       try {
         data = await analyzeFoodPhoto(apiKey, mediaType, base64Data, DATABASE_FOR_AI);
+        if (data.isFood !== false && !data.unusable && data.items?.length) cacheSet(key, data);
       } catch (err) {
         if (err instanceof GeminiError) {
           return unavailable(imageDataUrl, err.message, { detail: err.detail, needsApiKey: err.kind === 'invalid_key' });
@@ -252,12 +280,13 @@ class RealFoodRecognitionService implements FoodRecognitionServiceInterface {
       candidates,
       createdAt: new Date().toISOString(),
       recognitionAvailable: true,
-      modelUsed: apiKey ? (getLastModelUsed() ?? undefined) : undefined,
+      modelUsed: apiKey && resultSource === 'ai' ? (getLastModelUsed() ?? undefined) : undefined,
+      resultSource,
     };
   }
 
   /** Reads a nutrition facts label from a package photo: exact printed values instead of an estimate. */
-  async recognizeLabel(originalDataUrl: string): Promise<ScanResult> {
+  async recognizeLabel(originalDataUrl: string, opts: RecognizeOptions = {}): Promise<ScanResult> {
     // Labels need legible small print, so keep more resolution than meal photos.
     const imageDataUrl = await downscaleImage(originalDataUrl, 2000, 0.9);
     const base = { inputKind: 'label' as const };
@@ -268,8 +297,11 @@ class RealFoodRecognitionService implements FoodRecognitionServiceInterface {
       return { ...unavailable(imageDataUrl, 'Label scanning needs your free Gemini key — add it in Settings (takes a minute).', { needsApiKey: true }), ...base };
     }
     let label: RawLabelResponse;
+    const key = cacheKey('label', match[2]);
+    const remembered = opts.fresh ? undefined : cacheGet<RawLabelResponse>(key);
     try {
-      label = await analyzeNutritionLabel(apiKey, match[1], match[2]);
+      label = remembered ?? (await analyzeNutritionLabel(apiKey, match[1], match[2]));
+      if (!remembered && label.isLabel && label.per100Calories != null) cacheSet(key, label);
     } catch (err) {
       if (err instanceof GeminiError) {
         return { ...unavailable(imageDataUrl, err.message, { detail: err.detail, needsApiKey: err.kind === 'invalid_key' }), ...base };
@@ -289,16 +321,30 @@ class RealFoodRecognitionService implements FoodRecognitionServiceInterface {
       createdAt: new Date().toISOString(),
       recognitionAvailable: true,
       inputKind: 'label',
-      modelUsed: getLastModelUsed() ?? undefined,
+      modelUsed: remembered ? undefined : (getLastModelUsed() ?? undefined),
+      resultSource: remembered ? 'cache' : 'ai',
     };
   }
 
   /** Looks up typed foods ("150g chicken breast, 200g rice") with the user's own gram amounts. Needs the user's Gemini key. */
-  async recognizeText(description: string): Promise<ScanResult> {
+  async recognizeText(description: string, opts: RecognizeOptions = {}): Promise<ScanResult> {
     const text = description.trim();
     const apiKey = getGeminiKey();
     const base = { inputKind: 'text' as const };
     if (!text) return { ...unavailable('', 'Type what you ate first.'), ...base };
+
+    // Foods clearly in the built-in list are answered instantly, on the device.
+    const local = opts.fresh ? null : lookupLocally(text);
+    if (local) {
+      return {
+        id: generateId('scan'),
+        candidates: local.map((m) => localCandidate(m.raw, m.food, m.grams, m.count, m.portionAssumed)),
+        createdAt: new Date().toISOString(),
+        recognitionAvailable: true,
+        inputKind: 'text',
+        resultSource: 'local',
+      };
+    }
     if (!apiKey) {
       return {
         ...unavailable('', 'Typing foods needs your free Gemini key — add it in Settings (takes a minute).', { needsApiKey: true }),
@@ -307,8 +353,11 @@ class RealFoodRecognitionService implements FoodRecognitionServiceInterface {
     }
 
     let data: RawAnalysisResponse;
+    const key = cacheKey('text', normalize(text));
+    const remembered = opts.fresh ? undefined : cacheGet<RawAnalysisResponse>(key);
     try {
-      data = await analyzeFoodText(apiKey, text, DATABASE_FOR_AI);
+      data = remembered ?? (await analyzeFoodText(apiKey, text, DATABASE_FOR_AI));
+      if (!remembered && data.isFood !== false && data.items?.length) cacheSet(key, data);
     } catch (err) {
       if (err instanceof GeminiError) {
         return { ...unavailable('', err.message, { detail: err.detail, needsApiKey: err.kind === 'invalid_key' }), ...base };
@@ -325,9 +374,31 @@ class RealFoodRecognitionService implements FoodRecognitionServiceInterface {
       createdAt: new Date().toISOString(),
       recognitionAvailable: true,
       inputKind: 'text',
-      modelUsed: getLastModelUsed() ?? undefined,
+      modelUsed: remembered ? undefined : (getLastModelUsed() ?? undefined),
+      resultSource: remembered ? 'cache' : 'ai',
     };
   }
+}
+
+/** A typed food matched exactly in the built-in list — verified values, no AI. */
+function localCandidate(raw: string, food: FoodItem, grams: number, count: number | undefined, portionAssumed: boolean): ScannedFoodCandidate {
+  const pieceLabel = food.servingOptions.find((o) => o.unit === 'piece')?.label;
+  return {
+    id: generateId('cand'),
+    foodId: food.id,
+    name: food.name,
+    imageEmoji: food.imageEmoji,
+    seenDescription: portionAssumed ? `You wrote: "${raw}" — no amount given, so a typical portion is used. Adjust below.` : `You wrote: "${raw}"`,
+    unitCount: count,
+    unitLabel: count ? (pieceLabel?.replace(/^1\s*/, '').replace(/\s*\(.*\)$/, '') || 'pcs') : undefined,
+    estimatedGrams: grams,
+    per100gUsed: food.per100g,
+    nutrition: calculateNutrition(food.per100g, grams),
+    identificationConfidence: 100,
+    confidence: 'high',
+    matchedLocalFood: true,
+    nutritionSource: food.source,
+  };
 }
 
 function candidateFromLabel(label: RawLabelResponse): ScannedFoodCandidate {

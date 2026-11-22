@@ -236,7 +236,7 @@ export const FOODS: FoodItem[] = [
   {
     id: 'cottage-cheese',
     name: 'Cottage Cheese (5%)',
-    nameHe: 'גבינה לבנה',
+    nameHe: 'קוטג׳',
     category: 'Dairy',
     imageEmoji: '🧀',
     per100g: { calories: 98, proteinG: 11, carbsG: 3.4, fatG: 4.3, fiberG: 0, sugarG: 3.4, sodiumMg: 364 },

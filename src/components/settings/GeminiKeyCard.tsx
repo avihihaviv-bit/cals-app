@@ -26,7 +26,7 @@ export function GeminiKeyCard() {
   async function runTest(key: string) {
     setTest({ status: 'testing' });
     try {
-      const models = await listUsableModels(key);
+      const models = await listUsableModels(key, { fresh: true });
       const pro = models.find((m) => /pro/.test(m));
       setTest({ status: 'ok', model: getAiQuality() === 'best' && pro ? `${pro} (falls back to ${models[0]} when busy)` : models[0] });
     } catch (err) {
@@ -72,17 +72,17 @@ export function GeminiKeyCard() {
         <div className="rounded-xl bg-surface-alt p-3.5">
           <p className="text-sm font-semibold text-fg">Accuracy</p>
           <div className="mt-2 flex flex-wrap gap-2">
-            <Chip selected={quality === 'best'} onClick={() => chooseQuality('best')}>
-              🎯 Most accurate
-            </Chip>
             <Chip selected={quality === 'fast'} onClick={() => chooseQuality('fast')}>
-              ⚡ Fastest
+              ⚡ Fast (recommended)
+            </Chip>
+            <Chip selected={quality === 'best'} onClick={() => chooseQuality('best')}>
+              🎯 Pro — slower
             </Chip>
           </div>
           <p className="mt-1.5 text-[11px] text-muted">
-            {quality === 'best'
-              ? 'Scans and lookups use Gemini Pro first (smarter, ~10–30 s). If it’s busy or over the free limit, the fast model takes over automatically.'
-              : 'Uses Gemini Flash only — answers in a few seconds, slightly less precise.'}
+            {quality === 'fast'
+              ? 'Gemini Flash with a short thinking time — results in a few seconds. Same photo or text always gives the same answer.'
+              : 'Tries Gemini Pro first (often 15–40 s). If it’s busy or over the free limit, Flash takes over automatically.'}
           </p>
         </div>
       )}

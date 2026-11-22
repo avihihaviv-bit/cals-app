@@ -4,7 +4,7 @@
  * uploading far faster and costing far fewer image tokens. Falls back to the
  * original if the browser can't decode the image (e.g. an unsupported format).
  */
-export async function downscaleImage(dataUrl: string, maxDimension = 1280, quality = 0.85): Promise<string> {
+export async function downscaleImage(dataUrl: string, maxDimension = 1024, quality = 0.82): Promise<string> {
   try {
     const img = await loadImage(dataUrl);
     const scale = Math.min(1, maxDimension / Math.max(img.naturalWidth, img.naturalHeight));

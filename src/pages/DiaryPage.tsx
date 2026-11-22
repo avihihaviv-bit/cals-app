@@ -1,9 +1,8 @@
 import { useSearchParams } from 'react-router-dom';
-import { ChevronLeft, ChevronRight, Repeat } from 'lucide-react';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { MealSection } from '@/components/diary/MealSection';
 import { useDiaryForDate, MEAL_TYPES } from '@/hooks/useDiary';
 import { useTargets } from '@/hooks/useTargets';
-import { useAppStore } from '@/store/useAppStore';
 import { addDays, formatDayLabel, isToday, todayISO } from '@/utils/date';
 import { formatKcal } from '@/utils/format';
 
@@ -12,29 +11,9 @@ export function DiaryPage() {
   const date = params.get('date') || todayISO();
   const diary = useDiaryForDate(date);
   const { targets } = useTargets();
-  const yesterday = useDiaryForDate(addDays(date, -1));
-  const addDiaryEntry = useAppStore((s) => s.addDiaryEntry);
 
   function goTo(newDate: string) {
     setParams({ date: newDate });
-  }
-
-  function repeatYesterday(mealType: (typeof MEAL_TYPES)[number]) {
-    const entries = yesterday.byMeal[mealType];
-    for (const e of entries) {
-      addDiaryEntry({
-        date,
-        mealType,
-        foodId: e.foodId,
-        foodName: e.foodName,
-        foodImageEmoji: e.foodImageEmoji,
-        quantityGrams: e.quantityGrams,
-        servingLabel: e.servingLabel,
-        nutrition: e.nutrition,
-        dataQuality: e.dataQuality,
-        source: e.source,
-      });
-    }
   }
 
   return (
@@ -75,23 +54,9 @@ export function DiaryPage() {
       </div>
 
       <div className="space-y-6">
-        {MEAL_TYPES.map((mt) => {
-          const canRepeat = diary.byMeal[mt].length === 0 && yesterday.byMeal[mt].length > 0;
-          return (
-            <div key={mt}>
-              <MealSection mealType={mt} entries={diary.byMeal[mt]} totals={diary.mealTotals[mt]} date={date} />
-              {canRepeat && (
-                <button
-                  onClick={() => repeatYesterday(mt)}
-                  className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-xl bg-surface px-3 py-2 text-xs font-semibold text-primary-600 shadow-card transition hover:bg-primary-50"
-                >
-                  <Repeat size={13} />
-                  Repeat yesterday&apos;s {mt} ({yesterday.byMeal[mt].length} item{yesterday.byMeal[mt].length > 1 ? 's' : ''})
-                </button>
-              )}
-            </div>
-          );
-        })}
+        {MEAL_TYPES.map((mt) => (
+          <MealSection key={mt} mealType={mt} entries={diary.byMeal[mt]} totals={diary.mealTotals[mt]} date={date} />
+        ))}
       </div>
     </div>
   );

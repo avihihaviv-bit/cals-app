@@ -50,7 +50,7 @@ export function FoodSearchPage() {
   const online = useOnlineStatus();
 
   const [query, setQuery] = useState('');
-  const debouncedQuery = useDebounce(query, 300);
+  const debouncedQuery = useDebounce(query, 120);
   const [results, setResults] = useState<ResolvedFood[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);

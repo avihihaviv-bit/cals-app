@@ -17,11 +17,7 @@ export interface RestaurantServiceInterface {
   getRestaurantById(id: string): Promise<Restaurant | undefined>;
 }
 
-const NETWORK_DELAY_MS = 320;
 
-function delay(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 function normalize(text: string): string {
   return text.trim().toLowerCase();
@@ -29,7 +25,6 @@ function normalize(text: string): string {
 
 class MockRestaurantService implements RestaurantServiceInterface {
   async search({ text, city, cuisine }: RestaurantSearchQuery): Promise<Restaurant[]> {
-    await delay(NETWORK_DELAY_MS);
     let results = allRestaurants();
 
     if (text && text.trim()) {
@@ -47,17 +42,14 @@ class MockRestaurantService implements RestaurantServiceInterface {
   }
 
   async getDishes(restaurantId: string): Promise<RestaurantDish[]> {
-    await delay(150);
     return dishesForRestaurant(restaurantId);
   }
 
   async getDishById(id: string): Promise<RestaurantDish | undefined> {
-    await delay(80);
     return findDishById(id);
   }
 
   async getRestaurantById(id: string): Promise<Restaurant | undefined> {
-    await delay(80);
     return findRestaurantById(id);
   }
 }

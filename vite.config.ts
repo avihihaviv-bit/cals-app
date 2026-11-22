@@ -11,7 +11,16 @@ const buildId = `${(process.env.GITHUB_SHA ?? 'local').slice(0, 7)} · ${new Dat
 export default defineConfig({
   base,
   define: { __BUILD_ID__: JSON.stringify(buildId) },
-  plugins: [react()],
+  plugins: [
+    react(),
+    {
+      // version.json lets the running app notice a new release and update itself (see useAutoUpdate).
+      name: 'version-file',
+      generateBundle() {
+        this.emitFile({ type: 'asset', fileName: 'version.json', source: JSON.stringify({ build: buildId }) });
+      },
+    },
+  ],
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),

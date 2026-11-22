@@ -7,6 +7,7 @@ import { AppShell } from '@/components/layout/AppShell';
 import { OnboardingPage } from '@/pages/OnboardingPage';
 import { DashboardPage } from '@/pages/DashboardPage';
 import { PageSkeleton } from '@/components/ui/PageSkeleton';
+import { UpdateNotice } from '@/components/layout/UpdateNotice';
 
 const DiaryPage = lazy(() => import('@/pages/DiaryPage').then((m) => ({ default: m.DiaryPage })));
 const AddFoodHubPage = lazy(() => import('@/pages/AddFoodHubPage').then((m) => ({ default: m.AddFoodHubPage })));
@@ -34,13 +35,18 @@ export default function App() {
 
   if (!onboardingComplete) {
     return (
-      <Routes>
-        <Route path="*" element={<OnboardingPage />} />
-      </Routes>
+      <>
+        <UpdateNotice />
+        <Routes>
+          <Route path="*" element={<OnboardingPage />} />
+        </Routes>
+      </>
     );
   }
 
   return (
+    <>
+    <UpdateNotice />
     <AppShell>
       <Suspense fallback={<PageSkeleton />}>
         <Routes>
@@ -63,5 +69,6 @@ export default function App() {
         </Routes>
       </Suspense>
     </AppShell>
+    </>
   );
 }
