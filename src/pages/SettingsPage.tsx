@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { AlertTriangle, ChevronRight, Download, Laptop2, Moon, Sun, Trash2, Upload } from 'lucide-react';
+import { AlertTriangle, ChevronRight, Download, Laptop2, Moon, RefreshCw, Sun, Trash2, Upload } from 'lucide-react';
+import { checkForUpdateNow } from '@/hooks/useAutoUpdate';
 import { useAppStore, type BackupData } from '@/store/useAppStore';
 import { useLocaleStore, type Language } from '@/store/useLocaleStore';
 import { useSettingsStore, type ThemeMode, type NotificationSettings } from '@/store/useSettingsStore';
@@ -260,7 +261,32 @@ export function SettingsPage() {
         </div>
       </SettingsSection>
 
-      <p className="text-center text-[11px] text-faint">App version {__BUILD_ID__}</p>
+      <UpdateCheckCard />
+    </div>
+  );
+}
+
+/** Manual "check for updates": reloads onto a new version in place — the bookmark / home-screen icon and all data stay. */
+function UpdateCheckCard() {
+  const [status, setStatus] = useState<'idle' | 'checking' | 'updating' | 'latest' | 'offline'>('idle');
+  async function check() {
+    setStatus('checking');
+    setStatus(await checkForUpdateNow());
+  }
+  const message: Record<typeof status, string> = {
+    idle: 'Your data, key and home-screen icon stay as they are.',
+    checking: 'Checking…',
+    updating: 'New version found — updating now…',
+    latest: '✓ You have the latest version.',
+    offline: 'Couldn’t check — are you online? Try again in a moment.',
+  };
+  return (
+    <div className="rounded-xl2 bg-surface p-4 text-center shadow-card">
+      <Button fullWidth icon={<RefreshCw size={16} className={status === 'checking' || status === 'updating' ? 'animate-spin' : ''} />} disabled={status === 'checking' || status === 'updating'} onClick={check}>
+        Check for updates
+      </Button>
+      <p className={`mt-2 text-xs ${status === 'latest' ? 'text-primary-600' : status === 'offline' ? 'text-red-600' : 'text-muted'}`}>{message[status]}</p>
+      <p className="mt-1 text-[11px] text-faint">App version {__BUILD_ID__}</p>
     </div>
   );
 }

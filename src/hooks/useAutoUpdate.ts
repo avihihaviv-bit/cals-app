@@ -20,6 +20,42 @@ export function markUpdateBusy(busy: boolean) {
 const JUST_UPDATED = 'nai-just-updated';
 const TRIED = 'nai-update-tried';
 
+function reloadToLatest() {
+  try {
+    sessionStorage.setItem(JUST_UPDATED, '1');
+  } catch {
+    /* ignore */
+  }
+  // A new query string makes the browser fetch the new index.html instead of a cached copy.
+  // Same address and same storage: the home-screen icon / bookmark and all data stay as they are.
+  const url = new URL(window.location.href);
+  url.searchParams.set('v', String(Date.now()));
+  window.location.replace(url.toString());
+}
+
+/**
+ * The "Check for updates" button: asks the server which version is live and,
+ * if it's newer, reloads onto it right away. Returns 'latest' when this is
+ * already the newest version, 'offline' when the check couldn't run.
+ */
+export async function checkForUpdateNow(): Promise<'updating' | 'latest' | 'offline'> {
+  try {
+    const res = await fetch(`${import.meta.env.BASE_URL}version.json?t=${Date.now()}`, { cache: 'no-store' });
+    if (!res.ok) return 'offline';
+    const { build } = (await res.json()) as { build?: string };
+    if (!build || build === __BUILD_ID__) return 'latest';
+    try {
+      sessionStorage.removeItem(TRIED);
+    } catch {
+      /* ignore */
+    }
+    window.setTimeout(reloadToLatest, 400);
+    return 'updating';
+  } catch {
+    return 'offline';
+  }
+}
+
 export type UpdateState = 'idle' | 'waiting' | 'updating' | 'updated';
 
 export function useAutoUpdate(): UpdateState {
@@ -54,15 +90,11 @@ export function useAutoUpdate(): UpdateState {
       }
       setState('updating');
       try {
-        sessionStorage.setItem(JUST_UPDATED, '1');
         sessionStorage.setItem(TRIED, build);
       } catch {
         /* ignore */
       }
-      // A new query string makes the browser fetch the new index.html instead of a cached copy.
-      const url = new URL(window.location.href);
-      url.searchParams.set('v', String(Date.now()));
-      window.setTimeout(() => window.location.replace(url.toString()), 600);
+      window.setTimeout(reloadToLatest, 600);
     }
 
     async function check() {
