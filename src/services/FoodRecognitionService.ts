@@ -1,7 +1,7 @@
 import { FOODS, findFoodById } from '@/data/foods';
 import { calculateNutrition } from '@/utils/nutritionCalculator';
 import { generateId } from '@/utils/id';
-import { getAiQuality, getGeminiKey } from '@/utils/geminiKey';
+import { getAiQuality, getAiAccessKey } from '@/utils/geminiKey';
 import { cacheGet, cacheSet, fingerprint } from '@/utils/resultCache';
 import { lookupLocally, type LocalTextMatch } from '@/utils/localTextLookup';
 import { pluralizeUnit } from '@/utils/units';
@@ -441,7 +441,7 @@ class RealFoodRecognitionService implements FoodRecognitionServiceInterface {
     const [, mediaType, base64Data] = match;
 
     let data: RawAnalysisResponse;
-    const apiKey = getGeminiKey();
+    const apiKey = getAiAccessKey();
     const note = opts.note?.trim() ?? '';
     const key = cacheKey('photo', note ? `${base64Data}|${note}` : base64Data);
     const remembered = opts.fresh ? undefined : cacheGet<RawAnalysisResponse>(key);
@@ -497,7 +497,7 @@ class RealFoodRecognitionService implements FoodRecognitionServiceInterface {
     const base = { inputKind: 'label' as const };
     const match = imageDataUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
     if (!match) return { ...unavailable(imageDataUrl, 'Couldn’t read that photo — try taking it again.'), ...base };
-    const apiKey = getGeminiKey();
+    const apiKey = getAiAccessKey();
     if (!apiKey) {
       return { ...unavailable(imageDataUrl, 'Label scanning needs your free Gemini key — add it in Settings (takes a minute).', { needsApiKey: true }), ...base };
     }
@@ -534,7 +534,7 @@ class RealFoodRecognitionService implements FoodRecognitionServiceInterface {
   /** Looks up typed foods ("150g chicken breast, 200g rice") with the user's own gram amounts. Needs the user's Gemini key. */
   async recognizeText(description: string, opts: RecognizeOptions = {}): Promise<ScanResult> {
     const text = description.trim();
-    const apiKey = getGeminiKey();
+    const apiKey = getAiAccessKey();
     const base = { inputKind: 'text' as const };
     if (!text) return { ...unavailable('', 'Type what you ate first.'), ...base };
 

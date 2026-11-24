@@ -12,6 +12,25 @@ export function getGeminiKey(): string | null {
 }
 
 /** Strips all whitespace — keys pasted from a phone's Notes app often pick up stray spaces or line breaks. */
+/** Placeholder passed around when AI goes through the server router and this device holds no Gemini key. */
+export const ROUTER_ONLY = '__router__';
+
+/**
+ * What AI features should use: the device's own Gemini key, or — when only
+ * the AI server is set up — a placeholder meaning "use the server". Null
+ * means no AI is set up at all.
+ */
+export function getAiAccessKey(): string | null {
+  const key = getGeminiKey();
+  if (key) return key;
+  try {
+    const raw = JSON.parse(localStorage.getItem('nutrition-ai-router') ?? 'null');
+    return raw?.url && raw?.token ? ROUTER_ONLY : null;
+  } catch {
+    return null;
+  }
+}
+
 export function normalizeGeminiKey(raw: string): string {
   return raw.replace(/\s+/g, '');
 }

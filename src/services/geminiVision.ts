@@ -12,6 +12,8 @@
 import { getAiQuality } from '@/utils/geminiKey';
 import { MEASURE_CLASSES, PORTION_REFERENCE } from '@/data/portions';
 
+import { isRouterConfigured, routerGenerate, RouterFailure, type RouterRequest, type RouterTier } from '@/services/aiRouter';
+import { ROUTER_ONLY } from '@/utils/geminiKey';
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 const REQUEST_TIMEOUT_MS = 35_000;
 // Pro models think longer before answering — give them more room.
@@ -841,7 +843,7 @@ export function chatWithGemini(apiKey: string, systemPrompt: string, history: Ch
     },
     'Gemini declined to answer that — try asking differently.',
     (text) => (text.trim() ? text.trim() : null),
-    { effort: 'low', temperature: 0.6, hedgeAfterMs: 12_000 },
+    { effort: 'low', temperature: 0.6, hedgeAfterMs: 12_000, stream: true },
   );
 }
 
@@ -857,6 +859,8 @@ interface RunOptions {
   deterministic?: boolean;
   /** Temperature for pre-Gemini-3 models (Gemini 3 keeps its recommended default). */
   temperature?: number;
+  /** Ask the AI server to stream the answer (when the provider supports it). */
+  stream?: boolean;
 }
 
 type Outcome<T> =
@@ -1003,6 +1007,29 @@ async function runWithModels<T>(
   parse: (text: string, raw: any) => T | null,
   options: RunOptions = {},
 ): Promise<T> {
+  // AI server set up: it holds the provider keys and switches providers itself.
+  // The device's own Gemini key (if any) stays as a backup for when the server can't answer.
+  if (isRouterConfigured()) {
+    let failure: GeminiError;
+    try {
+      const out = await routerGenerate(toRouterRequest(requestBody, options), {
+        onDelta: options.stream ? () => {} : undefined,
+      });
+      const raw = out.grounding
+        ? { candidates: [{ groundingMetadata: { groundingChunks: out.grounding.sources.map((s) => ({ web: { uri: s.url, title: s.title } })), webSearchQueries: out.grounding.queries } }] }
+        : {};
+      const parsed = parse(out.text, raw);
+      if (parsed !== null) {
+        lastModelUsed = `${out.provider} · ${out.model}`;
+        return parsed;
+      }
+      failure = new GeminiError('bad_response', "The AI answer wasn't in the expected format — try again.", `${out.provider}/${out.model}: unparseable`);
+    } catch (err) {
+      failure = routerError(err);
+    }
+    if (!apiKey || apiKey === ROUTER_ONLY || failure.kind === 'blocked') throw failure;
+  }
+  if (!apiKey || apiKey === ROUTER_ONLY) throw new GeminiError('invalid_key', 'AI is not set up — add the AI server or a Gemini key in Settings.');
   const models = await modelsToTry(apiKey, options.accuracyCritical);
   const failures: string[] = [];
   let sawQuota = false;
@@ -1054,6 +1081,59 @@ async function runWithModels<T>(
       }, options.hedgeAfterMs);
     }
   });
+}
+
+/** The app's Gemini-shaped request → the router's provider-neutral request. */
+function toRouterRequest(requestBody: unknown, options: RunOptions): RouterRequest {
+  const b = requestBody as {
+    system_instruction?: { parts?: { text?: string }[] };
+    contents?: { role?: string; parts?: { text?: string; inline_data?: { mime_type: string; data: string } }[] }[];
+    generationConfig?: { responseSchema?: unknown; maxOutputTokens?: number };
+    tools?: Record<string, unknown>[];
+  };
+  const search = (b.tools ?? []).some((t) => 'google_search' in t);
+  const schema = b.generationConfig?.responseSchema;
+  const tier: RouterTier = options.accuracyCritical && getAiQuality() === 'best' ? 'best' : options.effort === 'none' && !schema ? 'fast' : 'balanced';
+  return {
+    capability: search ? 'web_search' : undefined, // text vs image is worked out by the server from the parts
+    tier,
+    system: (b.system_instruction?.parts ?? []).map((p) => p.text ?? '').join('\n'),
+    messages: (b.contents ?? []).map((c) => ({
+      role: c.role === 'model' ? 'assistant' : 'user',
+      parts: (c.parts ?? []).map((p) => (p.inline_data ? { image: { mimeType: p.inline_data.mime_type, data: p.inline_data.data } } : { text: p.text ?? '' })),
+    })),
+    json: schema ? { schema } : null,
+    maxTokens: b.generationConfig?.maxOutputTokens,
+    temperature: options.temperature,
+    deterministic: options.deterministic,
+    thinking: options.effort === 'none' ? 'none' : 'default',
+    deadlineMs: options.timeoutMs ?? 55_000,
+  };
+}
+
+function routerError(err: unknown): GeminiError {
+  if (err instanceof GeminiError) return err;
+  if (!(err instanceof RouterFailure)) return new GeminiError('unknown', "The AI server couldn't answer right now.", String(err));
+  const detail = [err.code, err.detail].filter(Boolean).join(': ');
+  switch (err.code) {
+    case 'unauthorized':
+      return new GeminiError('invalid_key', 'The AI server rejected the access code — check it in Settings.', detail);
+    case 'daily_limit':
+      return new GeminiError('quota_daily', 'Every AI provider on the server has used up its free daily limit — it comes back tomorrow. Meanwhile you can enter the values yourself.', detail);
+    case 'rate_limited':
+    case 'all_cooling':
+      return new GeminiError('quota', 'All AI providers are at their limit right now — try again in a minute.', detail);
+    case 'auth':
+      return new GeminiError('unknown', 'The provider keys on the AI server were rejected — check them in the server settings.', detail);
+    case 'network':
+    case 'timeout':
+      return new GeminiError('network', err.message, detail);
+    case 'no_providers':
+    case 'not_configured':
+      return new GeminiError('unknown', 'The AI server has no provider keys set up yet.', detail);
+    default:
+      return new GeminiError('bad_response', "The AI server couldn't answer right now.", detail || err.message);
+  }
 }
 
 function finalError(failures: string[], sawQuota: boolean, dailyFailures = 0): GeminiError {

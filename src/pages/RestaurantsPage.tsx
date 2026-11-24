@@ -9,7 +9,7 @@ import { useAddContext } from '@/hooks/useAddContext';
 import { useDebounce } from '@/hooks/useDebounce';
 import { useAppStore } from '@/store/useAppStore';
 import { markUpdateBusy } from '@/hooks/useAutoUpdate';
-import { getGeminiKey } from '@/utils/geminiKey';
+import { getAiAccessKey } from '@/utils/geminiKey';
 import { Button } from '@/components/ui/Button';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { DishCard } from '@/components/restaurants/DishCard';
@@ -38,7 +38,7 @@ export function RestaurantsPage() {
   }, [researchRunning]);
 
   const inputRef = useRef<HTMLInputElement>(null);
-  const hasKey = !!getGeminiKey();
+  const hasKey = !!getAiAccessKey();
 
   // Keep the query in the URL so "back" from a restaurant returns to the same results.
   useEffect(() => {

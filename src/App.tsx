@@ -20,6 +20,7 @@ const FavoritesPage = lazy(() => import('@/pages/FavoritesPage').then((m) => ({ 
 const ProfilePage = lazy(() => import('@/pages/ProfilePage').then((m) => ({ default: m.ProfilePage })));
 const MeasurementsPage = lazy(() => import('@/pages/MeasurementsPage').then((m) => ({ default: m.MeasurementsPage })));
 const AICoachPage = lazy(() => import('@/pages/AICoachPage').then((m) => ({ default: m.AICoachPage })));
+const AiStatusPage = lazy(() => import('@/pages/AiStatusPage').then((m) => ({ default: m.AiStatusPage })));
 const SettingsPage = lazy(() => import('@/pages/SettingsPage').then((m) => ({ default: m.SettingsPage })));
 const NutritionPage = lazy(() => import('@/pages/NutritionPage').then((m) => ({ default: m.NutritionPage })));
 
@@ -63,6 +64,7 @@ export default function App() {
           <Route path="/measurements" element={<MeasurementsPage />} />
           <Route path="/coach" element={<AICoachPage />} />
           <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/ai-status" element={<AiStatusPage />} />
           <Route path="/nutrition" element={<NutritionPage />} />
           <Route path="/onboarding" element={<OnboardingPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />

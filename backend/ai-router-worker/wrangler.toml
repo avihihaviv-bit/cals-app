@@ -1,0 +1,18 @@
+name = "cals-ai-router"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+
+# Secrets (never put them here):
+#   wrangler secret put ROUTER_ACCESS_TOKEN
+#   wrangler secret put GEMINI_API_KEYS
+#   wrangler secret put GROQ_API_KEYS
+#   wrangler secret put OPENROUTER_API_KEYS
+
+[vars]
+AI_PROVIDER_ORDER = "gemini,groq,openrouter"
+ALLOWED_ORIGINS = "https://avihihaviv-bit.github.io"
+
+# Optional: keeps cooldowns + usage stats across restarts.
+# [[kv_namespaces]]
+# binding = "ROUTER_STATE"
+# id = "<your KV namespace id>"

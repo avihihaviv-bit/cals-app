@@ -1,7 +1,7 @@
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useEffect, useRef, useState } from 'react';
 import { Camera, Check, ImagePlus, KeyRound, Lightbulb, Loader2, NotebookPen, PencilLine, RotateCcw, ScanLine, Search, SlidersHorizontal, Tag, X } from 'lucide-react';
-import { getGeminiKey } from '@/utils/geminiKey';
+import { getAiAccessKey } from '@/utils/geminiKey';
 import { markUpdateBusy } from '@/hooks/useAutoUpdate';
 import { foodFromAlternative, foodRecognitionService, IDENTIFICATION_CONFIDENCE_THRESHOLD } from '@/services/FoodRecognitionService';
 import { foodSearchService } from '@/services/FoodSearchService';
@@ -57,7 +57,7 @@ export function ScanFoodPage() {
   const [detailsOpenFor, setDetailsOpenFor] = useState<string | null>(null);
   const [editValuesFor, setEditValuesFor] = useState<string | null>(null);
   const [swapSearchFor, setSwapSearchFor] = useState<string | null>(null);
-  const [hasGeminiKey] = useState(() => !!getGeminiKey());
+  const [hasGeminiKey] = useState(() => !!getAiAccessKey());
   const [searchParams] = useSearchParams();
   const initialText = searchParams.get('text') ?? '';
   const [typedText, setTypedText] = useState(initialText);

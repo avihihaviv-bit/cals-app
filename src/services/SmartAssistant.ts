@@ -1,6 +1,6 @@
 import { answerAssistant, extractFoodLogText, isHebrewText, type AssistantAnswer, type AssistantContext } from './AssistantService';
 import { chatWithGemini, GeminiError, type ChatTurn } from './geminiVision';
-import { getGeminiKey } from '@/utils/geminiKey';
+import { getAiAccessKey } from '@/utils/geminiKey';
 import { FOODS } from '@/data/foods';
 
 const REFERENCE_TABLE = FOODS.map(
@@ -88,7 +88,7 @@ export async function answerSmart(rawInput: string, ctx: AssistantContext, histo
   const input = rawInput.trim();
   const he = isHebrewText(input);
   const local = answerAssistant(input, ctx);
-  const apiKey = getGeminiKey();
+  const apiKey = getAiAccessKey();
   if (!apiKey) return local;
 
   const foodText = extractFoodLogText(input) ?? (local.card?.type === 'food_confirm' ? input : null);

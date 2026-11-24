@@ -1,5 +1,5 @@
 import { askWithWebSearch, dailyResetLocalTime, GeminiError, type WebSource } from '@/services/geminiVision';
-import { getGeminiKey } from '@/utils/geminiKey';
+import { getAiAccessKey } from '@/utils/geminiKey';
 import { allRestaurants, dishesForRestaurant, makeDish } from '@/data/restaurants';
 import { normalizeText } from '@/services/restaurantSearch';
 import { useAppStore } from '@/store/useAppStore';
@@ -253,7 +253,7 @@ function existingByName(name: string, nameHe?: string): Restaurant | undefined {
 }
 
 export async function researchRestaurant(req: ResearchRequest): Promise<ResearchResult> {
-  const apiKey = getGeminiKey();
+  const apiKey = getAiAccessKey();
   if (!apiKey) throw new ResearchError('חוקר ה-AI צריך מפתח Gemini חינמי — הוסיפו אותו בהגדרות (לוקח דקה).', undefined, true);
 
   const target = req.restaurant ? `${req.restaurant.name}${req.restaurant.nameHe ? ` (${req.restaurant.nameHe})` : ''}` : req.query.trim();

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { ArrowRight, Mic, Send, Sparkles, TrendingDown, TrendingUp, X } from 'lucide-react';
-import { getGeminiKey } from '@/utils/geminiKey';
+import { getAiAccessKey } from '@/utils/geminiKey';
 import { getQuickActions } from '@/services/AssistantService';
 import { answerSmart } from '@/services/SmartAssistant';
 import { useAssistantContext } from '@/hooks/useAssistantContext';
@@ -39,7 +39,7 @@ export function AIAssistantPanel({ open, onClose }: { open: boolean; onClose: ()
   ]);
   const [input, setInput] = useState('');
   const [thinking, setThinking] = useState(false);
-  const aiLive = !!getGeminiKey();
+  const aiLive = !!getAiAccessKey();
   const scrollRef = useRef<HTMLDivElement>(null);
   const quickActions = getQuickActions(language);
 
