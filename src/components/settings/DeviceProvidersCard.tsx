@@ -8,7 +8,7 @@ import { getDeviceProviders, getRouterConfig, setDeviceProviders, testDeviceProv
 
 const PROVIDERS: { name: ProviderName; label: string; field: 'geminiExtra' | 'groq' | 'openrouter'; placeholder: string; link: string; linkLabel: string }[] = [
   { name: 'groq', label: 'Groq', field: 'groq', placeholder: 'gsk_… (one key per line)', link: 'https://console.groq.com/keys', linkLabel: 'console.groq.com/keys' },
-  { name: 'openrouter', label: 'OpenRouter', field: 'openrouter', placeholder: 'sk-or-… (one key per line)', link: 'https://openrouter.ai/keys', linkLabel: 'openrouter.ai/keys' },
+  { name: 'openrouter', label: 'OpenRouter (optional)', field: 'openrouter', placeholder: 'sk-or-… (one key per line)', link: 'https://openrouter.ai/keys', linkLabel: 'openrouter.ai/keys' },
   { name: 'gemini', label: 'More Gemini keys', field: 'geminiExtra', placeholder: 'AIza… (optional, one per line)', link: 'https://aistudio.google.com/apikey', linkLabel: 'aistudio.google.com/apikey' },
 ];
 
@@ -48,6 +48,7 @@ export function DeviceProvidersCard() {
         Add free keys from Groq and OpenRouter: when Gemini runs out (or is busy) the next company answers by itself. Photos only go to models that can see
         images. Keys stay only on this phone and are sent only to that company — never in the app&apos;s code or in backups.
         {hasServer && ' The AI server above is used first; these are its backup.'}
+        {' '}Groq and Gemini have a real free tier. OpenRouter is optional: the app only ever uses its models marked free, and never a paid one.
       </p>
 
       {PROVIDERS.map((prov) => {

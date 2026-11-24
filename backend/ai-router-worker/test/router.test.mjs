@@ -285,3 +285,12 @@ test('KV persistence: cooldowns survive a restart', async () => {
   await b.load(kv);
   assert.ok(b.coolingUntil('key:gemini#1 …_ONE'));
 });
+
+test('OpenRouter: only free models, never paid ones', () => {
+  const env = { ...ENV, GEMINI_API_KEYS: '', GROQ_API_KEYS: '', OPENROUTER_MODELS_BALANCED: 'openai/gpt-4o,deepseek/deepseek-chat-v3-0324:free' };
+  const targets = planTargets({ capability: 'text', tier: 'balanced', messages: [], stream: false }, env, new RouterState());
+  assert.ok(targets.length > 0);
+  assert.ok(targets.every((t) => t.model.endsWith(':free')), targets.map((t) => t.model).join(','));
+  const paid = planTargets({ capability: 'text', tier: 'balanced', messages: [], stream: false }, { ...env, OPENROUTER_ALLOW_PAID: 'true' }, new RouterState());
+  assert.ok(paid.some((t) => t.model === 'openai/gpt-4o'));
+});

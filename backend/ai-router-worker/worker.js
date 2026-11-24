@@ -228,7 +228,7 @@ const gemini = {
 };
 
 /** Shared request/response handling for OpenAI-compatible APIs (Groq, OpenRouter). */
-function openAICompatible({ name, envPrefix, keysVar, baseUrl, extraHeaders = () => ({}), defaults, isVisionModel, maxTokensField = 'max_tokens' }) {
+function openAICompatible({ name, envPrefix, keysVar, baseUrl, extraHeaders = () => ({}), defaults, isVisionModel, maxTokensField = 'max_tokens', allowModel = () => true }) {
   return {
     name,
     envPrefix,
@@ -238,7 +238,8 @@ function openAICompatible({ name, envPrefix, keysVar, baseUrl, extraHeaders = ()
     models(env, req) {
       return tieredModels(this, env, req.tier, req.capability);
     },
-    supportsModel(model, req) {
+    supportsModel(model, req, env = {}) {
+      if (!allowModel(model, env)) return false;
       return req.capability !== 'vision' || isVisionModel(model);
     },
     request(req, model, key, opts) {
@@ -309,6 +310,9 @@ const openrouter = openAICompatible({
     vision: ['meta-llama/llama-4-maverick:free', 'google/gemma-3-27b-it:free', 'qwen/qwen2.5-vl-72b-instruct:free'],
   },
   isVisionModel: (m) => openrouterVision.has(m) || /vision|-vl|llama-4|gemma-3|gemini|gpt-4o|pixtral|claude/i.test(m),
+  // Only free models (":free") — never one that charges money, even if the account has credit.
+  // Set OPENROUTER_ALLOW_PAID=true to allow paid models on purpose.
+  allowModel: (m, env) => m.endsWith(':free') || env.OPENROUTER_ALLOW_PAID === 'true',
 });
 
 // OpenRouter publishes which free models exist and which read images — use that instead of guessing.
@@ -431,7 +435,7 @@ export function planTargets(req, env, state) {
       // Prefer models OpenRouter currently lists; keep configured ones that are still listed.
       if (found.length) models = [...models.filter((m) => found.includes(m)), ...found.filter((m) => !models.includes(m))].slice(0, 6);
     }
-    models = models.filter((m) => adapter.supportsModel(m, req));
+    models = models.filter((m) => adapter.supportsModel(m, req, env));
     // Rotate keys inside each model: a limited key hands over to the next key before the next model.
     for (const model of models) {
       keys.forEach((key, i) => targets.push({ provider: pname, adapter, key, keyIndex: i, keyId: fingerprint(pname, i, key), model }));
