@@ -1,6 +1,5 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
-import { Activity, Server } from 'lucide-react';
+import { Server } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { getRouterConfig, routerStatus, RouterFailure, setRouterConfig, type RouterStatus } from '@/services/aiRouter';
 
@@ -93,11 +92,6 @@ export function AiServerCard() {
         )}
       </div>
       {result && <p className={`mt-2 text-xs ${result.ok ? 'text-primary-700' : 'text-red-600'}`}>{result.text}</p>}
-      {connected && (
-        <Link to="/ai-status" className="mt-2.5 flex items-center justify-center gap-1.5 text-xs font-semibold text-primary-700 hover:underline">
-          <Activity size={13} /> Provider status & usage
-        </Link>
-      )}
     </div>
   );
 }

@@ -696,6 +696,8 @@ export interface PhotoContext {
   note?: string;
   /** This user's earlier corrections ("You said X → it was really Y"), one per line. */
   corrections?: string;
+  /** A hard photo: ask the strongest available model for a second opinion. */
+  secondOpinion?: boolean;
 }
 
 /** Analyzes a food photo, plus anything the user added about it. */
@@ -720,10 +722,13 @@ export function analyzeFoodPhoto(
       text: `The user adds about this meal: «${note}». Treat it as true: it overrides what the photo suggests about identity, counts, amounts and preparation (stated amounts use amountBasis stated_weight / stated_count / stated_measure). Anything it mentions that isn't visible (e.g. "fried in 1 tbsp oil", "2 teaspoons of sugar in the coffee") is its own item with that amount — don't repeat it in suggestedAdditions.`,
     });
   }
-  return generateAnalysis(apiKey, systemPrompt, parts, 'Gemini declined to analyze this photo — try a different shot.', {
-    effort: 'low',
-    hedgeAfterMs: 13_000,
-  });
+  return generateAnalysis(
+    apiKey,
+    systemPrompt,
+    parts,
+    'Gemini declined to analyze this photo — try a different shot.',
+    context.secondOpinion ? { effort: 'low', hedgeAfterMs: 0, tierOverride: 'best', timeoutMs: 45_000 } : { effort: 'low', hedgeAfterMs: 13_000 },
+  );
 }
 
 /** Looks up foods the user typed (e.g. "150g chicken breast and 200g rice") — any food, with the exact amounts they gave. */
@@ -746,7 +751,7 @@ async function generateAnalysis(
   systemPrompt: string,
   userParts: unknown[],
   blockedMessage: string,
-  speed: { effort: Effort; hedgeAfterMs: number },
+  speed: { effort: Effort; hedgeAfterMs: number; tierOverride?: RouterTier; timeoutMs?: number },
 ): Promise<RawAnalysisResponse> {
   return runWithModels<RawAnalysisResponse>(
     apiKey,
@@ -861,6 +866,8 @@ interface RunOptions {
   temperature?: number;
   /** Ask the AI server to stream the answer (when the provider supports it). */
   stream?: boolean;
+  /** Force a model tier — "best" for a second opinion on a hard photo. */
+  tierOverride?: RouterTier;
 }
 
 type Outcome<T> =
@@ -970,7 +977,7 @@ async function attemptModel<T>(
 }
 
 /** Models to try, best first: Pro first in "best" mode, the same underlying model only once, quota-limited ones last. */
-async function modelsToTry(apiKey: string, accuracyCritical?: boolean): Promise<string[]> {
+async function modelsToTry(apiKey: string, accuracyCritical?: boolean, preferStrongest = false): Promise<string[]> {
   let models: string[];
   try {
     models = await listUsableModels(apiKey);
@@ -978,7 +985,7 @@ async function modelsToTry(apiKey: string, accuracyCritical?: boolean): Promise<
     if (err instanceof GeminiError && err.kind === 'invalid_key') throw err;
     models = FALLBACK_MODELS;
   }
-  if (accuracyCritical && getAiQuality() === 'best') {
+  if ((accuracyCritical && getAiQuality() === 'best') || preferStrongest) {
     models = [...models.filter((m) => /pro/.test(m)), ...models.filter((m) => !/pro/.test(m))];
   }
   const seen = new Set<string>();
@@ -1030,7 +1037,7 @@ async function runWithModels<T>(
     if (!apiKey || apiKey === ROUTER_ONLY || failure.kind === 'blocked') throw failure;
   }
   if (!apiKey || apiKey === ROUTER_ONLY) throw new GeminiError('invalid_key', 'AI is not set up — add the AI server or a Gemini key in Settings.');
-  const models = await modelsToTry(apiKey, options.accuracyCritical);
+  const models = await modelsToTry(apiKey, options.accuracyCritical, options.tierOverride === 'best');
   const failures: string[] = [];
   let sawQuota = false;
   let dailyFailures = 0;
@@ -1093,7 +1100,7 @@ function toRouterRequest(requestBody: unknown, options: RunOptions): RouterReque
   };
   const search = (b.tools ?? []).some((t) => 'google_search' in t);
   const schema = b.generationConfig?.responseSchema;
-  const tier: RouterTier = options.accuracyCritical && getAiQuality() === 'best' ? 'best' : options.effort === 'none' && !schema ? 'fast' : 'balanced';
+  const tier: RouterTier = options.tierOverride ? options.tierOverride : options.accuracyCritical && getAiQuality() === 'best' ? 'best' : options.effort === 'none' && !schema ? 'fast' : 'balanced';
   return {
     capability: search ? 'web_search' : undefined, // text vs image is worked out by the server from the parts
     tier,

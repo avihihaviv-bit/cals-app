@@ -12,6 +12,7 @@ import { Toggle } from '@/components/ui/Toggle';
 import { exportBackup } from '@/utils/backup';
 import { GeminiKeyCard } from '@/components/settings/GeminiKeyCard';
 import { AiServerCard } from '@/components/settings/AiServerCard';
+import { DeviceProvidersCard } from '@/components/settings/DeviceProvidersCard';
 import type { UserProfile } from '@/types';
 
 const THEME_OPTIONS: { value: ThemeMode; label: string; icon: typeof Sun }[] = [
@@ -110,6 +111,7 @@ export function SettingsPage() {
         <SettingsSection emoji="📸" title="AI photo scanning">
           <div className="space-y-3">
             <GeminiKeyCard />
+            <DeviceProvidersCard />
             <AiServerCard />
           </div>
         </SettingsSection>

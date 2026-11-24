@@ -326,6 +326,8 @@ export interface ScanResult {
   inputKind?: 'photo' | 'text' | 'label';
   /** Which Gemini model produced this result (shown for transparency). */
   modelUsed?: string;
+  /** A hard photo was double-checked by a stronger model; kept = the first answer was surer and stayed. */
+  secondOpinion?: { from?: string; by?: string; kept?: boolean };
   /** 'local' = answered instantly from the built-in list; 'cache' = the same input was analyzed before; 'ai' = fresh AI answer. */
   resultSource?: 'ai' | 'cache' | 'local';
   /** Present when recognitionAvailable is false, to explain why (e.g. "photo too blurry to identify anything"). */

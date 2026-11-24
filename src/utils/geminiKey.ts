@@ -25,7 +25,9 @@ export function getAiAccessKey(): string | null {
   if (key) return key;
   try {
     const raw = JSON.parse(localStorage.getItem('nutrition-ai-router') ?? 'null');
-    return raw?.url && raw?.token ? ROUTER_ONLY : null;
+    if (raw?.url && raw?.token) return ROUTER_ONLY;
+    const dev = JSON.parse(localStorage.getItem('nutrition-ai-provider-keys') ?? 'null');
+    return dev && (dev.groq || dev.openrouter || dev.geminiExtra) ? ROUTER_ONLY : null;
   } catch {
     return null;
   }

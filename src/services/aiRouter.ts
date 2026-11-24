@@ -6,7 +6,140 @@
  * out of quota — requests go one at a time, never duplicated in parallel.
  */
 
+import { routeRequest, RouterError, RouterState, statusReport, type KvLike, type RouterEnv } from '../../backend/ai-router-worker/worker.js';
+
 const STORAGE_KEY = 'nutrition-ai-router';
+const DEVICE_KEYS = 'nutrition-ai-provider-keys';
+const DEVICE_STATE = 'nutrition-ai-router-state';
+const GEMINI_DEVICE_KEY = 'nutrition-ai-gemini-key';
+
+export type ProviderName = 'gemini' | 'groq' | 'openrouter';
+
+/**
+ * Extra provider keys kept on this device (for when there's no server). They
+ * stay in their own storage entry — never in the code, never in a backup
+ * file — and are sent only to that provider's own API.
+ */
+export interface DeviceProviders {
+  geminiExtra: string;
+  groq: string;
+  openrouter: string;
+  primary: ProviderName;
+}
+
+export function getDeviceProviders(): DeviceProviders {
+  try {
+    const raw = JSON.parse(localStorage.getItem(DEVICE_KEYS) ?? 'null');
+    if (raw && typeof raw === 'object') {
+      return {
+        geminiExtra: String(raw.geminiExtra ?? ''),
+        groq: String(raw.groq ?? ''),
+        openrouter: String(raw.openrouter ?? ''),
+        primary: ['gemini', 'groq', 'openrouter'].includes(raw.primary) ? raw.primary : 'gemini',
+      };
+    }
+  } catch {
+    /* ignore */
+  }
+  return { geminiExtra: '', groq: '', openrouter: '', primary: 'gemini' };
+}
+
+export function setDeviceProviders(p: DeviceProviders) {
+  const clean = (v: string) => v.split(/[\s,]+/).filter(Boolean).join('\n');
+  localStorage.setItem(DEVICE_KEYS, JSON.stringify({ geminiExtra: clean(p.geminiExtra), groq: clean(p.groq), openrouter: clean(p.openrouter), primary: p.primary }));
+}
+
+/** Several providers set up on this device (more than just the one Gemini key). */
+export function isDeviceRouterConfigured(): boolean {
+  const p = getDeviceProviders();
+  return !!(p.groq.trim() || p.openrouter.trim() || p.geminiExtra.trim());
+}
+
+function deviceEnv(only?: ProviderName): RouterEnv {
+  const p = getDeviceProviders();
+  let gemini = '';
+  try {
+    gemini = localStorage.getItem(GEMINI_DEVICE_KEY) ?? '';
+  } catch {
+    /* ignore */
+  }
+  const order = [p.primary, ...(['gemini', 'groq', 'openrouter'] as ProviderName[]).filter((x) => x !== p.primary)];
+  const env: RouterEnv = {
+    AI_PROVIDER_ORDER: (only ? [only] : order).join(','),
+    GEMINI_API_KEYS: [gemini, p.geminiExtra].filter(Boolean).join(','),
+    GROQ_API_KEYS: p.groq,
+    OPENROUTER_API_KEYS: p.openrouter,
+  };
+  return env;
+}
+
+// The device router remembers which providers are resting (and usage stats) between app openings.
+const deviceKv: KvLike = {
+  async get() {
+    try {
+      return JSON.parse(localStorage.getItem(DEVICE_STATE) ?? 'null');
+    } catch {
+      return null;
+    }
+  },
+  async put(_key, value) {
+    try {
+      localStorage.setItem(DEVICE_STATE, value);
+    } catch {
+      /* storage full */
+    }
+  },
+};
+const deviceState = new RouterState();
+
+function failureFromRouterError(err: unknown): RouterFailure {
+  if (err instanceof RouterError) {
+    const detail = err.attempts.map((a) => `${a.provider}/${a.model}: ${a.kind}${a.status ? ` ${a.status}` : ''}`).join(' | ');
+    return new RouterFailure(err.code, err.message, detail || undefined);
+  }
+  return new RouterFailure('internal', String((err as Error)?.message ?? err));
+}
+
+async function deviceGenerate(req: RouterRequest): Promise<RouterAnswer> {
+  await deviceState.load(deviceKv);
+  try {
+    return await routeRequest({ ...req, stream: false }, deviceEnv(), deviceState);
+  } catch (err) {
+    throw failureFromRouterError(err);
+  } finally {
+    await deviceState.save(deviceKv);
+  }
+}
+
+/** Sends a tiny test question to one provider — each key on its own, so a bad key is pointed out. */
+export async function testDeviceProvider(name: ProviderName): Promise<{ ok: boolean; text: string }> {
+  const base = deviceEnv(name);
+  const varName = { gemini: 'GEMINI_API_KEYS', groq: 'GROQ_API_KEYS', openrouter: 'OPENROUTER_API_KEYS' }[name];
+  const keys = String(base[varName] ?? '').split(/[\s,]+/).filter(Boolean);
+  if (keys.length === 0) return { ok: false, text: 'No key entered.' };
+  const why: Record<string, string> = {
+    auth: 'rejected — check it was copied in full',
+    daily_limit: 'works, but its free daily limit is used up',
+    rate_limited: 'works, but it is at its limit right now',
+    all_cooling: 'at its limit right now',
+  };
+  const results = await Promise.all(
+    keys.map(async (key, i) => {
+      try {
+        const out = await routeRequest(
+          { tier: 'fast', messages: [{ role: 'user', parts: [{ text: 'Reply with just the word OK.' }] }], maxTokens: 64 },
+          { ...base, [varName]: key, MAX_ATTEMPTS: '3' },
+          new RouterState(), // test the key as it is now, ignoring earlier rests
+        );
+        return { ok: true, text: `Key ${i + 1}: works ✓ (${out.model}, ${(out.latencyMs / 1000).toFixed(1)}s)` };
+      } catch (err) {
+        const f = failureFromRouterError(err);
+        return { ok: false, text: `Key ${i + 1}: ${why[f.code] ?? f.message} ✗` };
+      }
+    }),
+  );
+  return { ok: results.some((r) => r.ok), text: results.map((r) => r.text).join(' · ') };
+}
 
 export interface RouterConfig {
   url: string;
@@ -23,8 +156,9 @@ export function getRouterConfig(): RouterConfig | null {
   return null;
 }
 
+/** True when AI should go through a router: the server, or several providers on this device. */
 export function isRouterConfigured(): boolean {
-  return getRouterConfig() !== null;
+  return getRouterConfig() !== null || isDeviceRouterConfigured();
 }
 
 export function normalizeRouterUrl(raw: string): string {
@@ -120,6 +254,17 @@ async function failureFrom(res: Response): Promise<RouterFailure> {
 
 /** One request through the router. With onDelta it streams (text arrives in pieces) when the provider supports it. */
 export async function routerGenerate(req: RouterRequest, opts: { signal?: AbortSignal; onDelta?: (piece: string) => void } = {}): Promise<RouterAnswer> {
+  if (!getRouterConfig()) return deviceGenerate(req);
+  try {
+    return await serverGenerate(req, opts);
+  } catch (err) {
+    // Server unreachable or out of options — the providers on this device (if any) get a turn.
+    if (err instanceof RouterFailure && err.code !== 'aborted' && isDeviceRouterConfigured()) return deviceGenerate(req);
+    throw err;
+  }
+}
+
+async function serverGenerate(req: RouterRequest, opts: { signal?: AbortSignal; onDelta?: (piece: string) => void }): Promise<RouterAnswer> {
   const timeoutMs = (req.deadlineMs ?? 55_000) + 15_000;
   const stream = !!opts.onDelta;
   const res = await call(
@@ -185,6 +330,10 @@ export interface RouterStatus {
 }
 
 export async function routerStatus(signal?: AbortSignal): Promise<RouterStatus> {
+  if (!getRouterConfig()) {
+    await deviceState.load(deviceKv);
+    return statusReport(deviceEnv(), deviceState) as RouterStatus;
+  }
   const res = await call('/v1/status', { method: 'GET' }, 15_000, signal);
   if (!res.ok) throw await failureFrom(res);
   return (await res.json()) as RouterStatus;

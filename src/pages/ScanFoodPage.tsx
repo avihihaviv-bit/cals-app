@@ -483,7 +483,7 @@ export function ScanFoodPage() {
           <div className="flex items-center justify-between gap-3 px-4 py-3">
             <p className="text-sm text-muted">
               {isLabel ? 'Reading the label' : 'Analyzing your meal'}… <span className="tabular-nums">{elapsed}s</span>
-              {elapsed >= 14 && <span className="block text-[11px]">Slower than usual — a backup model is answering too</span>}
+              {elapsed >= 14 && <span className="block text-[11px]">Taking longer — a hard photo gets checked by a stronger model, or a backup model is answering</span>}
             </p>
             <button onClick={cancelAnalysis} className="text-sm font-semibold text-muted hover:text-fg">
               Cancel
@@ -952,6 +952,12 @@ export function ScanFoodPage() {
                 </div>
               )}
               {scan.modelUsed && <p className="text-center text-[10px] text-faint">Analyzed by {scan.modelUsed}</p>}
+              {scan.secondOpinion && (
+                <p className="text-center text-[10px] text-faint">
+                  Hard photo — double-checked by a stronger model ({scan.secondOpinion.by ?? 'unknown'})
+                  {scan.secondOpinion.kept ? '; the first answer was surer and was kept.' : '; its surer answer is shown.'}
+                </p>
+              )}
               <ScanCoachOpinion candidates={candidates} />
               <Button fullWidth size="lg" onClick={confirmAdd}>
                 Add {candidates.length} item{candidates.length > 1 ? 's' : ''} to {MEAL_LABELS[mealType].label}

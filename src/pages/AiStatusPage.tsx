@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowLeft, RefreshCw } from 'lucide-react';
-import { getRouterConfig, routerStatus, RouterFailure, type RouterStatus } from '@/services/aiRouter';
+import { getRouterConfig, isDeviceRouterConfigured, routerStatus, RouterFailure, type RouterStatus } from '@/services/aiRouter';
 
 const KIND_LABEL: Record<string, string> = {
   ok: 'OK',
@@ -26,7 +26,8 @@ export function AiStatusPage() {
   const [status, setStatus] = useState<RouterStatus | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const configured = !!getRouterConfig();
+  const configured = !!getRouterConfig() || isDeviceRouterConfigured();
+  const onDevice = !getRouterConfig();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -56,7 +57,7 @@ export function AiStatusPage() {
           </Link>
           <div>
             <h1 className="text-xl font-bold text-fg">AI providers</h1>
-            <p className="text-xs text-muted">Live from your AI server · refreshes every 15 s</p>
+            <p className="text-xs text-muted">{onDevice ? 'Providers on this phone' : 'Live from your AI server'} · refreshes every 15 s</p>
           </div>
         </div>
         {configured && (
@@ -68,9 +69,9 @@ export function AiStatusPage() {
 
       {!configured && (
         <div className="rounded-xl2 bg-surface p-5 text-center shadow-card">
-          <p className="text-sm text-fg">The AI server isn&apos;t connected.</p>
+          <p className="text-sm text-fg">No extra AI companies are set up yet.</p>
           <Link to="/settings" className="mt-2 inline-block text-sm font-semibold text-primary-700 underline">
-            Connect it in Settings
+            Add them in Settings
           </Link>
         </div>
       )}
@@ -89,7 +90,7 @@ export function AiStatusPage() {
               <p className="mt-1 text-sm text-muted">No requests yet.</p>
             )}
             <p className="mt-2 text-xs text-muted">
-              Order: {status.order.join(' → ')} · {status.persistent ? 'stats kept across restarts' : 'stats reset when the server restarts (add a KV store to keep them)'}
+              Order: {status.order.join(' → ')} · {onDevice || status.persistent ? 'stats are kept' : 'stats reset when the server restarts (add a KV store to keep them)'}
             </p>
           </div>
 

@@ -54,6 +54,13 @@ function roundGrams(g: number): number {
   return Math.round(g / 10) * 10;
 }
 
+/** A photo with any item below this confidence gets a second opinion from the strongest available model. */
+const SECOND_OPINION_BELOW = 60;
+const meanConfidence = (d: RawAnalysisResponse) => {
+  const items = d.items ?? [];
+  return items.length ? items.reduce((sum, i) => sum + (i.identificationConfidence ?? 0), 0) / items.length : 0;
+};
+
 /** Below this identification confidence, the UI must show alternatives instead of asserting the name as fact. */
 export const IDENTIFICATION_CONFIDENCE_THRESHOLD = 70;
 
@@ -446,12 +453,32 @@ class RealFoodRecognitionService implements FoodRecognitionServiceInterface {
     const key = cacheKey('photo', note ? `${base64Data}|${note}` : base64Data);
     const remembered = opts.fresh ? undefined : cacheGet<RawAnalysisResponse>(key);
     let resultSource: ScanResult['resultSource'] = 'ai';
+    let firstModel: string | undefined;
+    let secondOpinion: ScanResult['secondOpinion'];
     if (remembered) {
       data = remembered;
       resultSource = 'cache';
     } else if (apiKey) {
       try {
+        const started = Date.now();
         data = await analyzeFoodPhoto(apiKey, mediaType, base64Data, databaseForAI(), { note, corrections: correctionsForPrompt() });
+        firstModel = getLastModelUsed() ?? undefined;
+        // Hard photo (the AI isn't sure what something is): ask the strongest available model for a second opinion and keep the surer answer.
+        const unsure = (data.items ?? []).some((i) => (i.identificationConfidence ?? 100) < SECOND_OPINION_BELOW);
+        if (unsure && data.isFood !== false && !data.unusable && Date.now() - started < 25_000) {
+          try {
+            const second = await analyzeFoodPhoto(apiKey, mediaType, base64Data, databaseForAI(), { note, corrections: correctionsForPrompt(), secondOpinion: true });
+            const secondModel = getLastModelUsed() ?? undefined;
+            if (second.isFood !== false && second.items?.length && meanConfidence(second) > meanConfidence(data)) {
+              data = second;
+              secondOpinion = { from: firstModel, by: secondModel };
+            } else {
+              secondOpinion = { from: firstModel, by: secondModel, kept: true };
+            }
+          } catch {
+            /* the first answer stands */
+          }
+        }
         if (data.isFood !== false && !data.unusable && data.items?.length) cacheSet(key, data);
       } catch (err) {
         if (err instanceof GeminiError) {
@@ -485,8 +512,9 @@ class RealFoodRecognitionService implements FoodRecognitionServiceInterface {
       candidates,
       createdAt: new Date().toISOString(),
       recognitionAvailable: true,
-      modelUsed: apiKey && resultSource === 'ai' ? (getLastModelUsed() ?? undefined) : undefined,
+      modelUsed: apiKey && resultSource === 'ai' ? (secondOpinion && !secondOpinion.kept ? secondOpinion.by : firstModel) : undefined,
       resultSource,
+      secondOpinion,
     };
   }
 
