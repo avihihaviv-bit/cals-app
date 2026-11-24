@@ -16,7 +16,9 @@ const API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 const REQUEST_TIMEOUT_MS = 35_000;
 // Pro models think longer before answering — give them more room.
 const PRO_TIMEOUT_MS = 100_000;
-const MAX_MODELS_TO_TRY = 4;
+// Each Gemini model has its OWN free daily quota, so keeping several different
+// models (2.5 Flash, Flash-Lite, 2.0 Flash…) means one used-up model just hands over to the next.
+const MAX_MODELS_TO_TRY = 8;
 const FALLBACK_MODELS = ['gemini-flash-latest', 'gemini-flash-lite-latest', 'gemini-pro-latest'];
 
 export interface RawAnalysisItem {
@@ -83,7 +85,7 @@ export interface RawAnalysisResponse {
   error?: string;
 }
 
-export type GeminiErrorKind = 'invalid_key' | 'quota' | 'overloaded' | 'blocked' | 'network' | 'bad_response' | 'unknown';
+export type GeminiErrorKind = 'invalid_key' | 'quota' | 'quota_daily' | 'overloaded' | 'blocked' | 'network' | 'bad_response' | 'unknown';
 
 export class GeminiError extends Error {
   constructor(
@@ -326,6 +328,8 @@ interface Learned {
   v: Record<string, string>;
   t: Record<string, { level?: boolean; budget?: boolean }>;
   c: Record<string, number>;
+  /** Models whose cooldown is a used-up DAILY quota. */
+  d?: Record<string, boolean>;
 }
 const LEARNED_KEY = 'nutrition-ai-gemini-learned';
 let learned: Learned = loadLearned();
@@ -333,7 +337,7 @@ let learned: Learned = loadLearned();
 function loadLearned(): Learned {
   try {
     const raw = JSON.parse(localStorage.getItem(LEARNED_KEY) ?? 'null');
-    if (raw && typeof raw === 'object') return { v: raw.v ?? {}, t: raw.t ?? {}, c: raw.c ?? {} };
+    if (raw && typeof raw === 'object') return { v: raw.v ?? {}, t: raw.t ?? {}, c: raw.c ?? {}, d: raw.d ?? {} };
   } catch {
     /* ignore */
   }
@@ -392,14 +396,30 @@ function thinkingConfigFor(model: string, effort: Effort): Record<string, unknow
   return null;
 }
 
+/** Milliseconds until Gemini's free daily quota resets (midnight Pacific time). */
+function msUntilDailyReset(now = new Date()): number {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Los_Angeles', hour: 'numeric', minute: 'numeric', second: 'numeric', hourCycle: 'h23' })
+    .formatToParts(now)
+    .reduce<Record<string, number>>((acc, p) => (p.type === 'literal' ? acc : { ...acc, [p.type]: Number(p.value) }), {});
+  const elapsed = ((parts.hour % 24) * 3600 + parts.minute * 60 + parts.second) * 1000;
+  return Math.max(60_000, 24 * 3600_000 - elapsed);
+}
+
+/** "10:00" — the local time the free daily quota comes back. */
+export function dailyResetLocalTime(): string {
+  const at = new Date(Date.now() + msUntilDailyReset());
+  return at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
 function coolDown(model: string, bodyText: string) {
   let ms = 60_000;
-  if (/PerDay/i.test(bodyText)) ms = 60 * 60_000;
+  // Daily limit: this model is out until the quota resets — don't keep asking it.
+  if (/PerDay/i.test(bodyText)) ms = msUntilDailyReset();
   else {
     const delay = bodyText.match(/"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"/);
     if (delay) ms = Math.min(10 * 60_000, Math.max(5_000, Number(delay[1]) * 1000));
   }
-  learned = { ...learned, c: { ...learned.c, [model]: Date.now() + ms } };
+  learned = { ...learned, c: { ...learned.c, [model]: Date.now() + ms }, d: { ...(learned.d ?? {}), [model]: /PerDay/i.test(bodyText) } };
   saveLearned();
 }
 
@@ -479,7 +499,7 @@ function isInvalidKeyResponse(status: number, bodyText: string): boolean {
 }
 
 /** Lists the Gemini models this key can use for image+text generation, best first. Also serves as the key check. */
-const MODELS_STORAGE_KEY = 'nutrition-ai-gemini-models';
+const MODELS_STORAGE_KEY = 'nutrition-ai-gemini-models-v2';
 const MODELS_TTL_MS = 24 * 60 * 60 * 1000;
 
 function keyFingerprint(apiKey: string): string {
@@ -791,7 +811,7 @@ export async function askWithWebSearch(apiKey: string, systemPrompt: string, use
       temperature: 0.2,
     });
   } catch (err) {
-    if (err instanceof GeminiError && (err.kind === 'invalid_key' || err.kind === 'quota' || err.kind === 'network')) throw err;
+    if (err instanceof GeminiError && (err.kind === 'invalid_key' || err.kind === 'quota' || err.kind === 'quota_daily' || err.kind === 'network')) throw err;
     // Search tool unavailable for this key/model — answer from the model's own knowledge, clearly flagged.
     const ans = await runWithModels<GroundedAnswer>(apiKey, request(false), 'Gemini declined this research request.', parse, {
       accuracyCritical: true,
@@ -841,7 +861,7 @@ interface RunOptions {
 
 type Outcome<T> =
   | { kind: 'ok'; value: T }
-  | { kind: 'fail'; detail: string; quota?: boolean }
+  | { kind: 'fail'; detail: string; quota?: boolean; daily?: boolean }
   | { kind: 'fatal'; error: GeminiError }
   | { kind: 'aborted' };
 
@@ -938,7 +958,7 @@ async function attemptModel<T>(
     }
     if (res.status === 429) {
       coolDown(model, bodyText);
-      return { kind: 'fail', detail: `${model}: 429 ${errorMessageFrom(bodyText).slice(0, 160)}`, quota: true };
+      return { kind: 'fail', detail: `${model}: 429 ${errorMessageFrom(bodyText).slice(0, 160)}`, quota: true, daily: /PerDay/i.test(bodyText) };
     }
     return { kind: 'fail', detail: `${model}: ${res.status} ${errorMessageFrom(bodyText).slice(0, 160)}` };
   }
@@ -986,6 +1006,7 @@ async function runWithModels<T>(
   const models = await modelsToTry(apiKey, options.accuracyCritical);
   const failures: string[] = [];
   let sawQuota = false;
+  let dailyFailures = 0;
 
   return new Promise<T>((resolve, reject) => {
     const queue = [...models];
@@ -1015,7 +1036,8 @@ async function runWithModels<T>(
           if (o.kind === 'fatal') return finish(() => reject(o.error));
           failures.push(o.detail);
           if (o.quota) sawQuota = true;
-          if (!launch() && live.size === 0) finish(() => reject(finalError(failures, sawQuota)));
+          if (o.daily) dailyFailures++;
+          if (!launch() && live.size === 0) finish(() => reject(finalError(failures, sawQuota, dailyFailures)));
         },
         (err) => {
           live.delete(ctrl);
@@ -1034,8 +1056,16 @@ async function runWithModels<T>(
   });
 }
 
-function finalError(failures: string[], sawQuota: boolean): GeminiError {
+function finalError(failures: string[], sawQuota: boolean, dailyFailures = 0): GeminiError {
   const detail = failures.join(' | ');
+  // Every model is out of its free DAILY quota: waiting a minute won't help — say when it comes back.
+  if (dailyFailures > 0 && dailyFailures === failures.filter((f) => /: 429 /.test(f)).length && failures.every((f) => /: 429 /.test(f) || /: 5\d\d /.test(f))) {
+    return new GeminiError(
+      'quota_daily',
+      `Gemini's free daily limit on your key is used up for today — it comes back at about ${dailyResetLocalTime()}. Meanwhile you can enter the values yourself or search the food list.`,
+      detail,
+    );
+  }
   if (sawQuota && failures.every((f) => /: 429 /.test(f) || /: 5\d\d /.test(f))) {
     return new GeminiError('quota', "You've hit Gemini's free usage limit for now — wait a minute (or until tomorrow for the daily limit) and try again.", detail);
   }

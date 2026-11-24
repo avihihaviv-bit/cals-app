@@ -1,4 +1,4 @@
-import { askWithWebSearch, GeminiError, type WebSource } from '@/services/geminiVision';
+import { askWithWebSearch, dailyResetLocalTime, GeminiError, type WebSource } from '@/services/geminiVision';
 import { getGeminiKey } from '@/utils/geminiKey';
 import { allRestaurants, dishesForRestaurant, makeDish } from '@/data/restaurants';
 import { normalizeText } from '@/services/restaurantSearch';
@@ -229,6 +229,8 @@ function friendlyGeminiError(err: GeminiError): ResearchError {
       return new ResearchError('מפתח ה-Gemini נדחה — בדקו בהגדרות שהוא הועתק במלואו.', err.detail, true);
     case 'quota':
       return new ResearchError('הגעתם למגבלת השימוש החינמית של Gemini כרגע — נסו שוב בעוד דקה (או מחר, אם זו המגבלה היומית).', err.detail);
+    case 'quota_daily':
+      return new ResearchError(`המגבלה היומית החינמית של Gemini במפתח שלך נגמרה להיום. היא מתחדשת אוטומטית מחר בבוקר (בערך ב-${dailyResetLocalTime()}).`, err.detail);
     case 'overloaded':
       return new ResearchError('השרתים של Gemini עמוסים כרגע — נסו שוב בעוד דקה.', err.detail);
     case 'network':

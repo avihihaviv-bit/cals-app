@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Bookmark, Camera, ChevronRight, Clock3, Heart, Search, Sparkles, Store, Trash2 } from 'lucide-react';
+import { Bookmark, Camera, ChevronRight, Clock3, Heart, PenLine, Search, Sparkles, Store, Trash2 } from 'lucide-react';
+import { ManualEntryCard } from '@/components/food/ManualEntryCard';
 import { useAppStore } from '@/store/useAppStore';
 import { useAddContext } from '@/hooks/useAddContext';
 import { resolveFoodRef } from '@/utils/resolveFoodRef';
@@ -20,6 +21,7 @@ export function AddFoodHubPage() {
   const [activeRef, setActiveRef] = useState<FoodRef | null>(null);
   const [quickText, setQuickText] = useState('');
   const [showAllMine, setShowAllMine] = useState(false);
+  const [manualOpen, setManualOpen] = useState(false);
 
   function submitQuickText() {
     const text = quickText.trim();
@@ -89,6 +91,24 @@ export function AddFoodHubPage() {
         </div>
         <p className="mt-1.5 text-[11px] text-muted">Write it in any words — AI works out the calories and macros.</p>
       </form>
+
+      {manualOpen ? (
+        <ManualEntryCard date={date} meal={meal ?? undefined} onAdded={handleAdded} />
+      ) : (
+        <button
+          onClick={() => setManualOpen(true)}
+          className="flex w-full items-center gap-3 rounded-xl2 bg-surface p-4 text-left shadow-card transition hover:bg-surface-alt"
+        >
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary-50 text-primary-600">
+            <PenLine size={18} />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block text-sm font-bold text-fg">Enter values yourself</span>
+            <span className="block text-[11px] text-muted">Type calories, protein, carbs and fat — no AI needed</span>
+          </span>
+          <ChevronRight size={16} className="text-faint" />
+        </button>
+      )}
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <AddOptionCard

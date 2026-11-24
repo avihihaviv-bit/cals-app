@@ -15,6 +15,7 @@ import { ErrorState } from '@/components/ui/ErrorState';
 import { NaturalnessBadge } from '@/components/ui/NaturalnessBadge';
 import { ScanAnimation } from '@/components/food/ScanAnimation';
 import { AddDetailsPanel } from '@/components/food/AddDetailsPanel';
+import { ManualEntryCard } from '@/components/food/ManualEntryCard';
 import { ScanCoachOpinion } from '@/components/food/ScanCoachOpinion';
 import { calculateNutrition, sumNutrition } from '@/utils/nutritionCalculator';
 import { findFoodById } from '@/data/foods';
@@ -68,6 +69,7 @@ export function ScanFoodPage() {
   const [fixNoteOpen, setFixNoteOpen] = useState(false);
   const [highlightId, setHighlightId] = useState<string | null>(null);
   const [imageRatio, setImageRatio] = useState(4 / 3);
+  const [manualOpen, setManualOpen] = useState(false);
   const isLabel = scan?.inputKind === 'label' || (stage === 'analyzing' && labelMode);
 
   // Arriving with ?text= (from food search or the AI chat) looks it up right away.
@@ -318,6 +320,7 @@ export function ScanFoodPage() {
     setScan(null);
     setCandidates([]);
     setSwapSearchFor(null);
+    setManualOpen(false);
   }
 
   function confirmAdd() {
@@ -535,6 +538,13 @@ export function ScanFoodPage() {
           <Button fullWidth variant="secondary" icon={<RotateCcw size={16} />} onClick={retake}>
             {isText ? 'Edit what I typed' : isLabel ? 'Try another label photo' : 'Take a different photo'}
           </Button>
+          {manualOpen ? (
+            <ManualEntryCard date={date} meal={mealFromUrl ?? undefined} onAdded={() => navigate(date ? `/diary?date=${date}` : '/')} />
+          ) : (
+            <Button fullWidth icon={<PencilLine size={16} />} variant={scan?.needsApiKey ? 'secondary' : 'primary'} onClick={() => setManualOpen(true)}>
+              Enter the values myself
+            </Button>
+          )}
           <Button fullWidth variant="secondary" icon={<Search size={16} />} onClick={() => navigate(`/add/search?${queryString}`)}>
             Search for food manually
           </Button>
